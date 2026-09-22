@@ -1,0 +1,36 @@
+# Dependencies (the project has none, but keep npm artefacts out anyway)
+node_modules/
+
+# Secrets and local configuration — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+id_rsa*
+
+# Runtime data: database, WAL/SHM sidecars, and uploaded media
+data/
+uploads/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+
+# Verification and build output
+coverage/
+.kiro/
+public/__deploy-probe.js
+tmp/
+dist/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.log

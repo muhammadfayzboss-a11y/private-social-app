@@ -1,0 +1,45 @@
+# Fly.io deployment for Circle. Replace app name and primary_region, then:
+#   fly volumes create circle_data --size 1
+#   fly secrets set APP_SECRET=... SETUP_CODE=... APP_ORIGIN=https://<app>.fly.dev
+#   fly deploy
+app = "circle-private"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  DATABASE_PATH = "/data/circle.db"
+  UPLOAD_DIR = "/data/uploads"
+  TRUST_PROXY = "true"
+
+# SQLite is single-writer, so exactly one machine must run.
+[mounts]
+  source = "circle_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[checks.health]
+  type = "http"
+  port = 8080
+  path = "/api/health"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"

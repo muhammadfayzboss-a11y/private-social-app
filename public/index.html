@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#7357ff">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Your private circle for moments, stories, and conversations.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Circle">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+  <title>Circle</title>
+</head>
+<body>
+  <div id="splash" class="splash" aria-label="Loading Circle">
+    <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+    <strong>Circle</strong><small>Just us.</small>
+  </div>
+  <main id="app" aria-live="polite"></main>
+  <div id="toast-region" class="toast-region" aria-live="assertive"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

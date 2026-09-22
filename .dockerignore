@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+data
+node_modules
+coverage
+tests
+scripts/browser-check.mjs
+scripts/deploy-check.mjs
+.kiro
+*.log

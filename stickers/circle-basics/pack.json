@@ -1,0 +1,16 @@
+{
+  "id": "circle-basics",
+  "name": "Circle Basics",
+  "description": "Simple starter reactions drawn for this project. Delete this folder once your custom packs are installed.",
+  "version": 1,
+  "sortOrder": 100,
+  "coverStickerId": "basics-heart",
+  "stickers": [
+    { "id": "basics-heart", "name": "Heart", "file": "heart.svg", "sortOrder": 0 },
+    { "id": "basics-thumb", "name": "Nice", "file": "thumb.svg", "sortOrder": 1 },
+    { "id": "basics-star", "name": "Star", "file": "star.svg", "sortOrder": 2 },
+    { "id": "basics-smile", "name": "Smile", "file": "smile.svg", "sortOrder": 3 },
+    { "id": "basics-party", "name": "Party", "file": "party.svg", "sortOrder": 4 },
+    { "id": "basics-sleep", "name": "Sleepy", "file": "sleep.svg", "sortOrder": 5 }
+  ]
+}
