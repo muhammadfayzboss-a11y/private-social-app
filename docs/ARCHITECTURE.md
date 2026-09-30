@@ -1,35 +1,97 @@
 # Circle architecture
 
-Circle is a private, dependency-free full-stack PWA optimized for one trusted group of 4–5 people.
+Circle is a private, dependency-free mobile messenger and social PWA for a trusted group. Mobile/installed PWA is the primary product; tablet and desktop are responsive presentations of the same application.
 
-## Technology choice
+## Technology and runtime boundaries
 
-Node 22 with **zero npm dependencies**. Everything needed is built in: `node:http` for transport, `node:sqlite` for a real relational database, `node:crypto` for scrypt hashing, ECDH, HKDF, and AES-GCM (used for Web Push), and native browser ES modules for the client. That removes the whole install/build/audit chain, keeps the deployment to one small process, and costs nothing to host — the right trade for a five-person app. Real-time delivery uses Server-Sent Events rather than WebSockets: it is a single authenticated GET, survives proxies, and reconnects automatically, which matters for phones that sleep.
+Circle requires Node 22.5+ and has zero npm dependencies:
 
-## Runtime boundaries
+- **Server:** `node:http`, `node:sqlite`, `node:crypto`, `node:zlib`, native filesystem and DNS/network modules.
+- **Client:** native ES modules, DOM APIs, History, MediaRecorder, Web Audio, EventSource, Service Worker, Web Push and Cache-Control.
+- **Persistence:** one normalized SQLite database plus opaque private files in `UPLOAD_DIR`.
+- **Realtime:** authenticated Server-Sent Events. SSE survives common HTTP proxies and reconnects automatically after mobile sleep.
 
-- `public/`: mobile-first browser application, installable PWA, and service worker.
-- `src/server.js`: HTTP transport, static assets, security headers, route protection, and error boundary.
-- `src/routes/`: feature-specific authenticated REST endpoints.
-- `src/db.js` + `src/schema.sql`: normalized relational persistence using Node 22's built-in SQLite engine.
-- `src/realtime.js`: authenticated Server-Sent Events connections for messages, reactions, notifications, read state, typing, and presence. Browser reconnection is automatic.
-- `src/storage.js`: private disk-backed object adapter. Database rows contain metadata and opaque storage keys, never binary media.
-- `stickers/`: metadata-driven custom artwork packs loaded without source changes.
+Boundaries:
+
+- `src/server.js`: transport, static fallback, security headers, error boundary and cached Brotli/Gzip text assets.
+- `src/routes/`: authenticated REST feature handlers.
+- `src/messages.js`: message paging/formatting/idempotency shared by chat and story replies.
+- `src/settings.js`, `src/privacy.js`: validated synced preferences and privacy decisions.
+- `src/linkPreview.js`: constrained server-side page metadata fetch.
+- `src/storage.js`: upload verification and authorized byte-range delivery.
+- `src/realtime.js`: session-aware connections, event IDs, presence and fan-out.
+- `public/`: installable, mobile-first PWA.
+
+## Mobile client architecture
+
+### Persistent navigation stack
+
+`public/lib/nav.js` owns four root tabs: **Chats, Feed, Activity, Settings**. A root tab is created once and kept mounted, preserving scroll position, drafts and UI state. Chats, profiles, search and settings sub-pages are pushed above the tab root and animate in/out; the underlying root remains in memory. In standalone mode, a left-edge drag performs an interactive back gesture.
+
+`public/lib/overlays.js` gives every sheet, message-selection mode, story viewer, emoji panel and in-chat search a History entry. Android Back and browser back gestures close the top overlay before leaving the screen. Replacing one overlay directly with another reuses its entry so dead same-URL history steps cannot accumulate.
+
+Screen modules are dynamically imported by `public/app.js`. Initial interaction loads only auth, state, realtime, shell and the current tab; conversation/settings/social modules are fetched when opened. The service worker installs all shell modules in the background for subsequent/offline launches.
+
+### State and realtime
+
+`public/store.js` is the single observable state owner. Message insertion matches both database `id` and sender `clientId`. Therefore the optimistic row, POST response, SSE frame, another sender tab and reconnect reconciliation all collapse into one row. Message rows and chat rows use content signatures and keyed elements; unchanged DOM nodes are retained.
+
+On reconnect the client reloads conversations/members/activity and reconciles every loaded message window. `before`, `after` and `around` cursors support older history, forward catch-up and jumping to replies/search/pins. The in-memory message window is trimmed after long reads while retaining a cursor.
+
+SSE connections record their session ID. Remote device termination invalidates the database session and immediately closes every stream authenticated by it.
+
+### Audio and recording
+
+`public/lib/audio.js` owns one shared `HTMLAudioElement` (with a Web Audio decode fallback). Only one voice message can play. Starting another pauses the current item; leaving a conversation stops playback. Position, progress, errors, playback speed and Media Session state derive from this manager.
+
+`public/lib/recorder.js` enforces `idle → starting → recording → stopping → idle`; duplicate taps cannot create parallel recorders. `public/components/voiceComposer.js` adds hold/release, slide-to-cancel, slide-up-to-lock, hands-free stop/preview, timer and live level. MP4/AAC is preferred for iPhone/Android compatibility; Opus/WebM is fallback. Duration and a bounded 48-bar waveform are stored with the media.
+
+### Rendering and appearance
+
+- `styles.css`: shared base components; `mobile.css`: mobile product shell, navigation, chat, settings, gestures and responsive overrides.
+- Light, Dark, AMOLED and System themes update immediately; font size, density, relative/clock timestamps and motion level are global preferences.
+- `public/lib/wallpapers.js` generates original colors, gradients, SVG patterns and abstract meshes. Custom wallpaper images are private media. Blur/dim and automatic dark-theme contrast are applied without mutating the file.
+- English keys are the canonical copy; `public/lib/locales/uz.js` provides complete Uzbek (Latin) coverage.
+- Every user-generated value is escaped before entering HTML. Trusted SVG icons are local path data; uploaded SVG is not accepted.
+
+## Data model and migrations
+
+Core normalized tables cover users, invites, sessions, media, posts/comments/reactions, stories/views/reactions/privacy, conversations/members, messages/reactions/hide-for-me, sticker packs/preferences, notifications and push subscriptions.
+
+Additional state:
+
+- `messages.client_id`: unique per sender for retry/optimistic idempotency.
+- `conversation_members`: read pointer, pin/mute/archive/marked-unread and cleared-before pointer (delete chat for me).
+- `users.settings_json`: server-validated cross-device preferences; last-seen/read-receipt flags remain queryable columns.
+- `user_blocks` and `story_hidden`: server-enforced privacy.
+- `link_previews`: status and bounded text metadata cache (no remote image URL).
+- media duration/waveform/dimensions/thumbnail and original file metadata.
+
+`schema.sql` creates fresh databases. `db.js` performs additive migrations and safely rebuilds the old `messages` table when expanding its SQLite CHECK constraint for file messages. Migration verification checks rows, replies, reactions, cascades, indexes and foreign keys.
+
+Indexes cover session expiry, active/author stories, post/feed order, conversation membership, message history/media/link subsets, notifications, block reverse lookup and story privacy reverse lookup. Feed and history are cursor-paged; media supports valid prefix/suffix/open byte ranges.
 
 ## Security model
 
-All private API, media, sticker, and event routes require an unexpired opaque session token in an HttpOnly, SameSite=Strict cookie. Session tokens and invite codes are SHA-256 hashed at rest; passwords use salted scrypt. Mutations require a per-session CSRF token. SQL values are bound parameters. Resource handlers enforce ownership or conversation membership. Uploads have type and size allowlists and opaque names. The server emits CSP, HSTS in HTTPS deployments, anti-framing, MIME-sniffing, and restrictive permissions headers.
+All `/api/*` routes except setup/login/status/health require an active opaque session in an `HttpOnly; SameSite=Strict` cookie; HTTPS adds `Secure` and HSTS. Mutations require a per-session CSRF token. Passwords use salted scrypt; session/invite values are only SHA-256 hashes at rest.
 
-## Data model
+Authorization is never delegated to the client:
 
-Users, invites, sessions, media, posts, post media, post reactions, comments, comment reactions, stories, story views, story reactions, conversations, conversation members (holding each member's read pointer), messages, message reactions, sticker packs, stickers, per-user sticker preferences, notifications, and push subscriptions are separate related tables with foreign keys, cascade rules, and indexes on the columns actually queried (feed order, conversation history, per-user notifications, active stories).
+- conversation read/write/media requires membership;
+- direct messages stop in both directions when either member blocks the other;
+- story listing/view/reply/media applies blocks and the author's hidden list;
+- viewer lists and expired archives are author-only;
+- edit/delete-for-everyone requires ownership;
+- settings/wallpapers/sessions are scoped to the signed-in member;
+- remote session deletion closes live SSE streams;
+- notification preferences are enforced before server push.
 
-Stories are served only while `expires_at > now`, so expiry is immediate and cannot be bypassed; `src/maintenance.js` later reclaims storage for long-expired stories, dead sessions, and orphaned media. Pagination is cursor-based (`id < cursor`) for the feed and message history, and media is streamed with range support so video seeks work.
+Uploads have purpose-specific MIME allowlists plus byte signatures. Images/video/audio may render inline; PDF/Office/ZIP/text files are forced through `Content-Disposition: attachment`. SVG/HTML/executables are not accepted. Names are sanitized and storage keys are random.
 
-## Client
+Link previews expose no third-party images. URLs permit only default-port HTTP(S), no credentials, and no internal hostnames. Every DNS answer must be public, the HTTP socket is pinned to that answer, each redirect is revalidated, and reads are time/size/hop bounded. This closes normal, redirect and DNS-rebinding SSRF paths, including IPv4-mapped IPv6 loopback spellings.
 
-The client is a small hand-rolled framework: a hash-free history router (`public/router.js`), a single observable store (`public/store.js`) that owns all server state, and view modules that render and clean themselves up. Post cards and chat messages are element-based and replaced only when their content signature changes, which keeps interactions smooth without a virtual DOM. All user-generated text passes through `escapeHtml` at render time, so stored content is never interpreted as markup.
+The server emits a no-inline-script CSP, anti-framing, MIME-sniffing, referrer, opener and permissions policies. Private API/media is never written to Service Worker CacheStorage; only the public application shell is available offline.
 
-## Future native packaging
+## Scaling boundary
 
-The UI and API are transport-separated and use browser-standard capabilities. The PWA can be wrapped with Capacitor later. For multi-instance hosting, replace SQLite with PostgreSQL, disk storage with S3-compatible object storage, and in-memory SSE fan-out with Redis pub/sub while preserving API contracts.
+The current one-process design is intentional for a private circle. For multiple instances, preserve REST/event contracts while replacing SQLite with PostgreSQL, disk files with S3-compatible storage and in-memory SSE fan-out with Redis pub/sub. Until then, one small persistent-volume instance is simpler and safer.

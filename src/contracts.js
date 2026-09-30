@@ -1,7 +1,7 @@
 // Shared API event and domain names. Kept dependency-free so both server and browser tooling can consume it.
 export const REALTIME_EVENTS = Object.freeze([
   'connected','presence','member:joined','profile:updated','post:created','post:updated','post:deleted','post:reaction',
-  'comment:created','story:created','story:deleted','story:viewed','message:created','message:updated','message:deleted','message:reaction','message:read',
+  'comment:created','story:created','story:deleted','story:viewed','stories:refresh','message:created','message:updated','message:deleted','message:reaction','message:read',
   'conversation:updated','conversation:pinned','conversation:removed','settings:updated','typing','notification'
 ]);
 export const REACTIONS = Object.freeze(['heart','laugh','wow','sad','fire','celebrate']);

@@ -4,12 +4,14 @@
  * resynchronises: conversations, open message windows, feed, and activity are re-fetched, because
  * events broadcast while the phone was asleep are not replayed by the server.
  */
+import { request } from './api.js';
 import {
   addNotification, applyPresence, applyProfile, applyRead, applyStoryView, conversationById, loadActivity, loadConversations,
-  loadMembers, patchConversation, patchPost, publish, removeMessage, removePost, removeStory, resyncMessages, setTyping, state,
+  loadMembers, patchConversation, patchPost, publish, removeConversation, removeMessage, removePost, removeStory, resyncMessages, setTyping, state,
   upsertConversation, upsertMessage, upsertPost, upsertStory
 } from './store.js';
 import { setServerTime } from './lib/time.js';
+import { applyServerSettings } from './lib/settings.js';
 
 let source = null;
 let reconnectTimer = null;
@@ -45,6 +47,7 @@ const handlers = {
   'story:created': data => upsertStory(data.story),
   'story:deleted': data => removeStory(data.storyId),
   'story:viewed': data => applyStoryView(data.storyId, data.view),
+  'stories:refresh': () => { import('./store.js').then(store => store.loadStories()).catch(() => {}); },
   'message:created': onMessageCreated,
   'message:updated': data => upsertMessage(data.conversationId, data.message),
   'message:reaction': data => upsertMessage(data.conversationId, data.message),
@@ -63,6 +66,9 @@ const handlers = {
     applyRead(data.conversationId, data.userId, data.messageId);
   },
   'conversation:updated': data => upsertConversation(data.conversation),
+  'conversation:removed': data => removeConversation(data.conversationId),
+  'settings:updated': data => applyServerSettings(data.settings),
+  'block:changed': () => { loadConversations().catch(() => {}); loadMembers(true).catch(() => {}); publish('blocks'); },
   'conversation:pinned': data => patchConversation(data.conversationId, { pinnedMessage: data.pinnedMessage }),
   typing: data => setTyping(data.conversationId, data.userId, data.typing, data.kind),
   notification: data => addNotification(data)
@@ -106,11 +112,21 @@ export function connectRealtime() {
   source.addEventListener('error', () => {
     if (current !== source) return;
     setStatus(navigator.onLine === false ? 'offline' : 'connecting');
-    // EventSource retries by itself while CONNECTING; a CLOSED stream (e.g. a 401 or proxy error) needs a manual retry.
+    // EventSource retries by itself while CONNECTING. A CLOSED stream may mean this device was
+    // remotely signed out: verify the session before scheduling another connection.
     if (source.readyState === EventSource.CLOSED) {
       clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(() => { if (state.user) connectRealtime(); }, retryDelay);
+      const delay = retryDelay;
       retryDelay = Math.min(retryDelay * 2, 30000);
+      request('/api/auth/status').then(status => {
+        if (!status.authenticated) {
+          window.dispatchEvent(new CustomEvent('circle:auth-revoked'));
+          return;
+        }
+        reconnectTimer = setTimeout(() => { if (state.user) connectRealtime(); }, delay);
+      }).catch(() => {
+        reconnectTimer = setTimeout(() => { if (state.user) connectRealtime(); }, delay);
+      });
     }
   });
 }

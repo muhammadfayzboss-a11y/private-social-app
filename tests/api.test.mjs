@@ -1,4 +1,4 @@
-import test, { after, before } from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient, dbModule, pngFixture, server } from './helpers.mjs';
 
@@ -480,6 +480,17 @@ test('the application shell and PWA assets are served', async () => {
 
   const deepLink = await createClient().call('/chat/1');
   assert.equal(deepLink.status, 200, 'client routes fall back to the app shell');
+
+  const compressedCss = await createClient().call('/mobile.css', { headers: { 'accept-encoding': 'br' } });
+  assert.equal(compressedCss.status, 200);
+  assert.equal(compressedCss.headers.get('content-encoding'), 'br', 'text assets are Brotli-compressed for mobile transfer');
+  assert.match(compressedCss.headers.get('vary'), /accept-encoding/i);
+  assert.match(compressedCss.data, /mobile messenger layer/);
+
+  const head = await createClient().call('/app.js', { method: 'HEAD', headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(head.status, 200);
+  assert.equal(head.data, null, 'HEAD never sends an asset body');
+  assert.equal(head.headers.get('content-encoding'), 'gzip');
 });
 
 test('server files outside the public folder are never served', async () => {

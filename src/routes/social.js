@@ -55,16 +55,19 @@ export function registerSocialRoutes(router) {
     const media = one('SELECT * FROM media WHERE id = ?', Number(params.id));
     if (!media) throw new HttpError(404, 'Media not found.');
     const userId = req.session.user.id;
-    // Avatars and posts are shared with the whole circle; stories only while they are live (the author
-    // keeps access for their archive); chat media only for members of a conversation that uses it.
-    // Story media also honours the author's "hide my stories from" list and blocks in either direction.
-    const accessible = media.owner_id === userId || one(`SELECT 1 FROM users WHERE avatar_media_id = ?
+    // Owners can read an uncommitted upload (needed between upload and message/post creation), and
+    // their private wallpaper. Once chat media is referenced, the same visibility boundary as the
+    // message list applies: delete-for-me, clear-chat and delete-for-everyone all revoke its URL.
+    const messageReferenced = one('SELECT 1 FROM messages WHERE media_id = ? LIMIT 1', media.id);
+    const ownedDraft = media.owner_id === userId && (!messageReferenced || media.purpose === 'wallpaper');
+    const accessible = ownedDraft || one(`SELECT 1 FROM users WHERE avatar_media_id = ?
       UNION SELECT 1 FROM post_media WHERE media_id = ?
       UNION SELECT 1 FROM stories s WHERE s.media_id = ? AND (s.author_id = ? OR (s.expires_at > ?
         AND NOT EXISTS (SELECT 1 FROM story_hidden sh WHERE sh.author_id = s.author_id AND sh.user_id = ?)
         AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE (b.blocker_id = s.author_id AND b.blocked_id = ?) OR (b.blocker_id = ? AND b.blocked_id = s.author_id))))
       UNION SELECT 1 FROM messages m JOIN conversation_members cm ON cm.conversation_id = m.conversation_id
-        WHERE m.media_id = ? AND m.deleted_at IS NULL AND cm.user_id = ? LIMIT 1`,
+        WHERE m.media_id = ? AND m.deleted_at IS NULL AND cm.user_id = ? AND m.id > COALESCE(cm.cleared_before_id, 0)
+          AND NOT EXISTS (SELECT 1 FROM message_hidden mh WHERE mh.message_id = m.id AND mh.user_id = cm.user_id) LIMIT 1`,
       media.id, media.id, media.id, userId, new Date().toISOString(), userId, userId, userId, media.id, userId);
     if (!accessible) throw new HttpError(403, 'You do not have access to this media.');
     sendMedia(req, res, media, { download: url.searchParams.get('download') === '1' });
@@ -84,7 +87,7 @@ export function registerSocialRoutes(router) {
     }
     run('UPDATE users SET display_name = ?, bio = ?, avatar_media_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', displayName, bio, avatarId, req.session.user.id);
     const user = one('SELECT * FROM users WHERE id = ?', req.session.user.id);
-    broadcast('profile:updated', { user: publicUser(user, isOnline(user.id)) }, null, user.id);
+    broadcast('profile:updated', { user: publicUser(user, false, { includePresence: false }) }, null, user.id);
     json(res, 200, { user: publicUser(user, true, { self: true }) });
   });
 
@@ -103,7 +106,7 @@ export function registerSocialRoutes(router) {
     for (const [column, value] of Object.entries(changes)) run(`UPDATE users SET ${column} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, value, req.session.user.id);
     const user = one('SELECT * FROM users WHERE id = ?', req.session.user.id);
     const online = isOnline(user.id);
-    broadcast('profile:updated', { user: publicUser(user, online) }, null, user.id);
+    broadcast('profile:updated', { user: publicUser(user, false, { includePresence: false }) }, null, user.id);
     // Others must see presence changes immediately, not on their next reload.
     if ('show_last_seen' in changes) {
       broadcast('presence', changes.show_last_seen ? { userId: user.id, online, lastSeenAt: iso(user.last_seen_at) } : { userId: user.id, online: false, lastSeenAt: null, hidden: true }, null, user.id);

@@ -11,7 +11,7 @@ import { notify, notifyMessage } from '../notifications.js';
 import { blockedByIds, blockedEitherWay, isBlocked, readReceiptsEnabled } from '../privacy.js';
 import { isOnline, sendMany } from '../realtime.js';
 import { stickerFile, syncStickerPacks } from '../stickers.js';
-import { cleanText, HttpError, iso, json, parseJson, publicUser } from '../utils.js';
+import { cleanText, HttpError, iso, json, parseJson, publicUser, sha256 } from '../utils.js';
 
 const SENDABLE_KINDS = MESSAGE_KINDS.filter(kind => kind !== 'story_reply');
 const FORWARDABLE_KINDS = new Set(['text', 'image', 'video', 'voice', 'sticker', 'story_reply', 'file']);
@@ -86,7 +86,7 @@ function broadcastConversation(conversationId, members = memberIds(conversationI
 /** A soft delete keeps the row (so replies can say "deleted message") but strips all content. */
 function deleteForEveryone(message) {
   transaction(() => {
-    run(`UPDATE messages SET deleted_at = ?, body = '', media_id = NULL, sticker_id = NULL, link_url = NULL WHERE id = ?`, new Date().toISOString(), message.id);
+    run(`UPDATE messages SET deleted_at = ?, body = '', link_url = NULL WHERE id = ?`, new Date().toISOString(), message.id);
     run('DELETE FROM message_reactions WHERE message_id = ?', message.id);
     run('UPDATE conversations SET pinned_message_id = NULL WHERE pinned_message_id = ?', message.id);
   });
@@ -390,43 +390,64 @@ export function registerChatRoutes(router) {
     json(res, 200, { message: getMessage(message.id, req.session.user.id) });
   });
 
-  function forward(sourceIds, targets, user) {
-    const sources = sourceIds.map(id => rawMessage(id));
+  function forward(sourceIds, targets, user, operationId) {
+    const operation = validClientId(operationId);
+    if (!operation) throw new HttpError(400, 'A forwarding operation id is required.');
+    const sources = sourceIds.map(id => rawMessage(id)).sort((a, b) => a.id - b.id);
     for (const source of sources) {
       membershipRow(source.conversation_id, user.id);
+      if (!one(`SELECT 1 FROM messages m WHERE m.id = ? AND ${VISIBLE}`, source.id, user.id, user.id)) throw new HttpError(404, 'One of those messages is no longer in your history.');
       if (source.deleted_at) throw new HttpError(410, 'One of those messages was deleted.');
       if (!FORWARDABLE_KINDS.has(source.kind)) throw new HttpError(400, 'This message cannot be forwarded.');
     }
     const conversations = targets.map(target => membershipRow(target, user.id));
     for (const conversation of conversations) assertCanSend(conversation, user.id);
-    rateLimit(`message:${user.id}`, 60, 20000);
-    const created = [];
-    for (const conversation of conversations) {
-      for (const source of sources.sort((a, b) => a.id - b.id)) {
-        const kind = source.kind === 'story_reply' ? 'text' : source.kind;
-        const { id } = createMessage({
-          conversationId: conversation.id, senderId: user.id, kind, body: source.body,
-          mediaId: source.media_id, stickerId: source.sticker_id, forwardedFromId: source.forwarded_from_id || source.sender_id
-        });
-        afterCreate(conversation, user, id, { kind, text: source.body });
-        created.push(getMessage(id, user.id));
+    const outputCount = sources.length * conversations.length;
+    if (outputCount > 30) throw new HttpError(400, 'Forward up to 30 message copies at once.');
+    // Charge every output against the normal message limiter before any write occurs.
+    for (let index = 0; index < outputCount; index += 1) rateLimit(`message:${user.id}`, 60, 20000);
+
+    const plan = transaction(() => {
+      const rows = [];
+      for (const conversation of conversations) {
+        let newest = 0;
+        for (const source of sources) {
+          const clientId = `fw_${sha256(`${user.id}:${operation}:${source.id}:${conversation.id}`).slice(0, 40)}`;
+          const existing = one('SELECT id FROM messages WHERE sender_id = ? AND client_id = ?', user.id, clientId);
+          if (existing) { rows.push({ id: Number(existing.id), conversation, created: false }); continue; }
+          const kind = source.kind === 'story_reply' ? 'text' : source.kind;
+          const inserted = run(`INSERT INTO messages(conversation_id, sender_id, kind, body, media_id, sticker_id, forwarded_from_id, client_id, link_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, conversation.id, user.id, kind, source.body, source.media_id, source.sticker_id,
+            source.forwarded_from_id || source.sender_id, clientId, kind === 'text' ? firstLink(source.body) : null);
+          newest = Math.max(newest, Number(inserted.lastInsertRowid));
+          rows.push({ id: Number(inserted.lastInsertRowid), conversation, kind, text: source.body, created: true });
+        }
+        if (newest) {
+          run('UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', conversation.id);
+          run('UPDATE conversation_members SET last_read_message_id = MAX(COALESCE(last_read_message_id, 0), ?) WHERE conversation_id = ? AND user_id = ?', newest, conversation.id, user.id);
+        }
       }
-    }
-    return created;
+      return rows;
+    });
+    // Nothing is emitted until the entire operation commits. A retry returns existing rows silently.
+    for (const item of plan) if (item.created) afterCreate(item.conversation, user, item.id, { kind: item.kind, text: item.text });
+    return { messages: plan.map(item => getMessage(item.id, user.id)), duplicate: plan.every(item => !item.created) };
   }
 
   router.post('/api/messages/:id/forward', async (req, res, params) => {
     const body = await parseJson(req);
     const targets = [...new Set((Array.isArray(body.conversationIds) ? body.conversationIds : []).map(Number))].slice(0, 10);
     if (!targets.length) throw new HttpError(400, 'Choose at least one chat.');
-    json(res, 201, { messages: forward([Number(params.id)], targets, req.session.user) });
+    const result = forward([Number(params.id)], targets, req.session.user, body.operationId);
+    json(res, result.duplicate ? 200 : 201, result);
   });
 
   router.post('/api/messages/forward', async (req, res) => {
     const body = await parseJson(req);
     const targets = [...new Set((Array.isArray(body.conversationIds) ? body.conversationIds : []).map(Number))].slice(0, 10);
     if (!targets.length) throw new HttpError(400, 'Choose at least one chat.');
-    json(res, 201, { messages: forward(idList(body.messageIds, 50), targets, req.session.user) });
+    const result = forward(idList(body.messageIds, 30), targets, req.session.user, body.operationId);
+    json(res, result.duplicate ? 200 : 201, result);
   });
 
   /**

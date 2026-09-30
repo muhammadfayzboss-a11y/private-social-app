@@ -3,7 +3,7 @@
  * Every handler acts on the signed-in member only; ids in the URL are always checked against them.
  */
 import { all, one, run } from '../db.js';
-import { broadcast, isOnline, sendMany } from '../realtime.js';
+import { broadcast, disconnectSession, sendMany } from '../realtime.js';
 import { getSettings, updateSettings } from '../settings.js';
 import { HttpError, iso, json, parseJson, publicUser, validateUsername } from '../utils.js';
 
@@ -21,9 +21,13 @@ export function registerAccountRoutes(router) {
 
   router.patch('/api/settings', async (req, res) => {
     const body = await parseJson(req, 64000);
+    const previous = getSettings(req.session.user.id);
     const settings = updateSettings(req.session.user.id, body.settings ?? body);
     // Other signed-in devices of this member pick the change up live.
     sendMany([req.session.user.id], 'settings:updated', { settings });
+    if (previous.privacy.storyReplies !== settings.privacy.storyReplies) {
+      sendMany(all('SELECT id FROM users WHERE id <> ?', req.session.user.id).map(row => Number(row.id)), 'stories:refresh', {});
+    }
     json(res, 200, { settings });
   });
 
@@ -34,7 +38,7 @@ export function registerAccountRoutes(router) {
     if (taken) throw new HttpError(409, 'That username is already in use.');
     run('UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', username, req.session.user.id);
     const user = one('SELECT * FROM users WHERE id = ?', req.session.user.id);
-    broadcast('profile:updated', { user: publicUser(user, isOnline(user.id)) }, null, user.id);
+    broadcast('profile:updated', { user: publicUser(user, false, { includePresence: false }) }, null, user.id);
     json(res, 200, { user: publicUser(user, true, { self: true }) });
   });
 
@@ -48,9 +52,11 @@ export function registerAccountRoutes(router) {
     const target = one('SELECT id FROM users WHERE id = ?', Number(body.userId));
     if (!target || target.id === req.session.user.id) throw new HttpError(400, 'Choose another member.');
     run('INSERT OR IGNORE INTO user_blocks(blocker_id, blocked_id) VALUES (?, ?)', req.session.user.id, target.id);
-    // The blocked member immediately loses this member's presence.
+    // Presence is reciprocal across a block: neither side sees the other's online/last-seen state.
     sendMany([target.id], 'presence', { userId: req.session.user.id, online: false, lastSeenAt: null, hidden: true });
+    sendMany([req.session.user.id], 'presence', { userId: target.id, online: false, lastSeenAt: null, hidden: true });
     sendMany([req.session.user.id, target.id], 'block:changed', { userId: target.id, by: req.session.user.id, blocked: true });
+    sendMany([req.session.user.id, target.id], 'stories:refresh', {});
     json(res, 201, { ok: true });
   });
 
@@ -58,6 +64,7 @@ export function registerAccountRoutes(router) {
     const targetId = Number(params.userId);
     run('DELETE FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?', req.session.user.id, targetId);
     sendMany([req.session.user.id, targetId], 'block:changed', { userId: targetId, by: req.session.user.id, blocked: false });
+    sendMany([req.session.user.id, targetId], 'stories:refresh', {});
     json(res, 200, { ok: true });
   });
 
@@ -77,11 +84,14 @@ export function registerAccountRoutes(router) {
     if (id === req.session.id) throw new HttpError(400, 'Use “Sign out” to end this session.');
     const removed = run('DELETE FROM sessions WHERE id = ? AND user_id = ?', id, req.session.user.id).changes;
     if (!removed) throw new HttpError(404, 'Session not found.');
+    disconnectSession(id);
     json(res, 200, { ok: true });
   });
 
   router.post('/api/sessions/terminate-others', (req, res) => {
+    const ids = all('SELECT id FROM sessions WHERE user_id = ? AND id <> ?', req.session.user.id, req.session.id).map(row => Number(row.id));
     const removed = run('DELETE FROM sessions WHERE user_id = ? AND id <> ?', req.session.user.id, req.session.id).changes;
+    ids.forEach(disconnectSession);
     json(res, 200, { ok: true, removed });
   });
 }

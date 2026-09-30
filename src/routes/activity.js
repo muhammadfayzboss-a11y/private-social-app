@@ -34,8 +34,8 @@ export function registerActivityRoutes(router) {
     const body=await parseJson(req);const endpoint=validPushEndpoint(body.endpoint);
     if(!endpoint||typeof body.keys?.p256dh!=='string'||typeof body.keys?.auth!=='string')throw new HttpError(400,'Invalid push subscription.');
     const subscription={endpoint,keys:{p256dh:body.keys.p256dh.slice(0,200),auth:body.keys.auth.slice(0,100)}};
-    run(`INSERT INTO push_subscriptions(user_id,endpoint,subscription_json) VALUES (?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,subscription_json=excluded.subscription_json`,req.session.user.id,endpoint,JSON.stringify(subscription));
+    run(`INSERT INTO push_subscriptions(user_id,session_id,endpoint,subscription_json) VALUES (?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,session_id=excluded.session_id,subscription_json=excluded.subscription_json`,req.session.user.id,req.session.id,endpoint,JSON.stringify(subscription));
     json(res,201,{ok:true});
   });
-  router.delete('/api/push/subscribe',async(req,res)=>{const body=await parseJson(req);run('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?',String(body.endpoint||''),req.session.user.id);json(res,200,{ok:true});});
+  router.delete('/api/push/subscribe',async(req,res)=>{const body=await parseJson(req);run('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=? AND session_id=?',String(body.endpoint||''),req.session.user.id,req.session.id);json(res,200,{ok:true});});
 }

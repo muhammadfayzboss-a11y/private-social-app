@@ -17,13 +17,14 @@ export function blockedEitherWay(a, b) {
   return Boolean(one('SELECT 1 FROM user_blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)', a, b, b, a));
 }
 
-/** Members who blocked `viewerId`: their presence is hidden from the viewer. */
+/** Members in either direction of a block relationship: presence is hidden reciprocally. */
 export function blockedByIds(viewerId) {
-  return new Set(all('SELECT blocker_id FROM user_blocks WHERE blocked_id = ?', viewerId).map(row => Number(row.blocker_id)));
+  return new Set(all(`SELECT blocker_id id FROM user_blocks WHERE blocked_id = ?
+    UNION SELECT blocked_id FROM user_blocks WHERE blocker_id = ?`, viewerId, viewerId).map(row => Number(row.id)));
 }
 
 export function blockedIds(userId) {
-  return new Set(all('SELECT blocked_id FROM user_blocks WHERE blocker_id = ?', userId).map(row => Number(row.blocked_id)));
+  return blockedByIds(userId);
 }
 
 /** Authors whose stories `viewerId` may not see (hidden by the author, or blocked either way). */

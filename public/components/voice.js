@@ -5,8 +5,10 @@
  */
 import { icon } from '../icons.js';
 import { formatDuration } from '../lib/time.js';
-import { onPlaybackChange, seek, snapshotFor, toggle } from '../lib/audio.js';
+import { onPlaybackChange, playbackRate, seek, setPlaybackRate, snapshotFor, toggle, wasPlayed } from '../lib/audio.js';
 import { escapeHtml } from '../ui.js';
+import { t } from '../lib/i18n.js';
+import { updateSettings } from '../lib/settings.js';
 
 const BARS = 40;
 
@@ -18,18 +20,21 @@ function bars(waveform) {
   });
 }
 
-export function voiceMarkup(media, { title = '' } = {}) {
+export function voiceMarkup(media, { title = '', mine = false } = {}) {
   const heights = bars(media.waveform);
   const wave = heights.map(height => `<i style="height:${height}%"></i>`).join('');
-  return `<div class="voice" data-voice="${escapeHtml(String(media.id))}" data-src="${escapeHtml(media.url)}" data-duration="${Number(media.durationMs) || ''}" data-title="${escapeHtml(title)}">
-    <button type="button" class="voice-play" data-voice-toggle aria-label="Play voice message">
+  const unplayed = !mine && typeof media.id === 'number' && !wasPlayed(media.id);
+  return `<div class="voice${unplayed ? ' is-unplayed' : ''}" data-voice="${escapeHtml(String(media.id))}" data-src="${escapeHtml(media.url)}" data-duration="${Number(media.durationMs) || ''}" data-title="${escapeHtml(title)}">
+    <button type="button" class="voice-play" data-voice-toggle aria-label="${t('Play voice message')}">
       <span class="voice-icon-play">${icon('play', 20, true)}</span><span class="voice-icon-pause">${icon('pause', 20, true)}</span><span class="voice-spinner"></span>
     </button>
     <div class="voice-body">
-      <div class="voice-wave" data-voice-seek role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+      <div class="voice-wave" data-voice-seek role="slider" aria-label="${t('Playback position')}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
         <div class="voice-bars">${wave}</div><div class="voice-bars voice-bars-progress" aria-hidden="true">${wave}</div>
       </div>
-      <div class="voice-meta"><span data-voice-time>${media.durationMs ? formatDuration(media.durationMs) : '0:00'}</span><span class="voice-error" data-voice-error hidden></span></div>
+      <div class="voice-meta"><span data-voice-time>${media.durationMs ? formatDuration(media.durationMs) : '0:00'}</span><i class="unplayed-dot" aria-hidden="true"></i>
+        <button type="button" class="voice-speed" data-voice-speed aria-label="${t('Playback speed')}">${playbackRate()}×</button>
+        <span class="voice-error" data-voice-error hidden></span></div>
     </div>
   </div>`;
 }
@@ -47,11 +52,14 @@ export function paintVoice(element, snapshot) {
   element.classList.toggle('is-loading', state.status === 'loading');
   element.classList.toggle('is-error', state.status === 'error');
   element.classList.toggle('is-started', state.position > 0 || state.status === 'playing' || state.status === 'loading');
+  if (state.status === 'playing' || state.status === 'loading') element.classList.remove('is-unplayed');
+  const speed = element.querySelector('[data-voice-speed]');
+  if (speed) speed.textContent = `${playbackRate()}×`;
   element.style.setProperty('--progress', `${(fraction * 100).toFixed(2)}%`);
   const wave = element.querySelector('[data-voice-seek]');
   wave?.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
   const button = element.querySelector('[data-voice-toggle]');
-  button?.setAttribute('aria-label', state.status === 'playing' ? 'Pause voice message' : 'Play voice message');
+  button?.setAttribute('aria-label', state.status === 'playing' ? t('Pause voice message') : t('Play voice message'));
   const time = element.querySelector('[data-voice-time]');
   const showPosition = state.status === 'playing' || state.status === 'loading' || state.position > 0;
   const text = showPosition ? formatDuration(state.position * 1000) : (total ? formatDuration(total * 1000) : '0:00');
@@ -63,6 +71,15 @@ export function paintVoice(element, snapshot) {
 /** Wires every voice element inside `root`. Returns a cleanup function. */
 export function bindVoice(root) {
   const click = event => {
+    const speed = event.target.closest('[data-voice-speed]');
+    if (speed && root.contains(speed)) {
+      event.stopPropagation();
+      const next = { 1: 1.5, 1.5: 2, 2: 1 }[playbackRate()] || 1;
+      setPlaybackRate(next);
+      updateSettings({ chat: { voiceSpeed: next } }).catch(() => {});
+      for (const button of document.querySelectorAll('[data-voice-speed]')) button.textContent = `${next}×`;
+      return;
+    }
     const toggleButton = event.target.closest('[data-voice-toggle]');
     if (toggleButton && root.contains(toggleButton)) {
       event.stopPropagation();

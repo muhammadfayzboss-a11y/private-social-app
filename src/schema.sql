@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS user_blocks (
   FOREIGN KEY (blocker_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (blocked_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id, blocker_id);
 
 -- Story privacy: an author's stories are never shown to (or readable by) these members.
 CREATE TABLE IF NOT EXISTS story_hidden (
@@ -238,6 +239,7 @@ CREATE TABLE IF NOT EXISTS story_hidden (
   FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS idx_story_hidden_user ON story_hidden(user_id, author_id);
 
 -- Cached link previews (title/description only; fetched server-side with SSRF protection).
 CREATE TABLE IF NOT EXISTS link_previews (
@@ -276,9 +278,11 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, crea
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL,
+  session_id INTEGER NOT NULL,
   endpoint TEXT NOT NULL UNIQUE,
   subscription_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);

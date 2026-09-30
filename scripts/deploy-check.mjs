@@ -246,7 +246,7 @@ try {
     await fill(page, '#displayName', 'Mara Quinn');
     await fill(page, '#password', 'deployment-pass-1');
     await click(page, '.auth-card button[type="submit"]');
-    await waitFor(page, "document.querySelector('.bottom-nav')", { label: 'app shell' });
+    await waitFor(page, "document.querySelector('.tabbar')", { label: 'app shell' });
 
     const state = await evaluate(page, `
       const registration = await navigator.serviceWorker.ready;
@@ -269,13 +269,13 @@ try {
     await sleep(1200);
     const offline = await evaluate(page, `
       await new Promise(resolve => setTimeout(resolve, 800));
-      return { html: document.body.innerHTML.length, hasShell: Boolean(document.querySelector('.splash, .auth-card, .bottom-nav, .toast')),
+      return { html: document.body.innerHTML.length, hasShell: Boolean(document.querySelector('.splash, .auth-card, .tabbar, .toast, .offline-screen')),
                text: document.body.innerText.slice(0, 120) };`);
     await page.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
     if (!offline.hasShell || offline.html < 100) throw new Error('offline reload produced a blank page');
     await screenshot(page, '20-offline-shell', shotDir);
     await page.send('Page.reload', { ignoreCache: false });
-    await waitFor(page, "document.querySelector('.bottom-nav')", { label: 'recovery after reconnect' });
+    await waitFor(page, "document.querySelector('.tabbar')", { label: 'recovery after reconnect' });
     return 'cached shell renders offline and recovers online';
   });
 
@@ -283,13 +283,14 @@ try {
     const overflows = [];
     for (const [name, device] of Object.entries(DEVICES)) {
       await useDevice(page, device);
-      await sleep(350);
-      for (const [label, selector] of [['feed', '[data-nav="/"]'], ['create', '[data-nav="/create"]'], ['chat', '[data-nav="/chat"]'], ['activity', '[data-nav="/activity"]'], ['profile', '[data-nav="/profile"]']]) {
-        await click(page, selector);
-        await sleep(450);
+      await sleep(250);
+      for (const [label, route] of [['chats', '/'], ['feed', '/feed'], ['activity', '/activity'], ['settings', '/settings']]) {
+        await evaluate(page, `history.replaceState({depth:0}, '', ${JSON.stringify(route)}); dispatchEvent(new PopStateEvent('popstate')); return true;`);
+        await sleep(250);
         const measurement = await evaluate(page, `
           const doc = document.documentElement;
           const widest = [...document.querySelectorAll('body *')]
+            .filter(node => getComputedStyle(node).display !== 'none')
             .map(node => ({ tag: node.tagName + (node.className && typeof node.className === 'string' ? '.' + node.className.split(' ')[0] : ''), right: Math.round(node.getBoundingClientRect().right) }))
             .sort((a, b) => b.right - a.right)[0];
           return { scrollWidth: doc.scrollWidth, clientWidth: doc.clientWidth, widest };`);
@@ -299,21 +300,21 @@ try {
       }
     }
     if (overflows.length) throw new Error(overflows.join('; '));
-    return `${Object.keys(DEVICES).length} viewports × 5 tabs clean`;
+    return `${Object.keys(DEVICES).length} viewports × 4 tabs clean`;
   });
 
   await check('primary touch targets meet the 44px minimum', async () => {
     await useDevice(page, DEVICES['iPhone SE']);
-    await click(page, '[data-nav="/"]');
-    await sleep(400);
+    await evaluate(page, "history.replaceState({depth:0}, '', '/'); dispatchEvent(new PopStateEvent('popstate')); return true;");
+    await sleep(300);
     const small = await evaluate(page, `
-      const targets = [...document.querySelectorAll('.nav-item, .app-header .icon-button, .post-action')];
+      const targets = [...document.querySelectorAll('.tab-item, .topbar .icon-button, .fab')];
       return targets.map(node => {
         const rect = node.getBoundingClientRect();
         return { label: node.dataset.name || node.dataset.action || node.className, width: Math.round(rect.width), height: Math.round(rect.height) };
-      }).filter(item => item.height < 44 || item.width < 44);`);
+      }).filter(item => item.height > 0 && item.width > 0 && (item.height < 44 || item.width < 44));`);
     if (small.length) throw new Error(small.map(item => `${item.label} ${item.width}x${item.height}`).join(', '));
-    return 'navigation and post actions are at least 44px';
+    return 'navigation, top bars, and compose action are at least 44px';
   });
 
   await check('the chat composer stays reachable when the on-screen keyboard is open', async () => {
@@ -322,7 +323,7 @@ try {
       const response = await fetch('/api/conversations', { credentials: 'same-origin', headers: { 'x-csrf-token': status.csrfToken } });
       const data = await response.json();
       return data.conversations.map(item => item.id);`);
-    await click(page, '[data-nav="/chat"]');
+    await evaluate(page, "history.replaceState({depth:0}, '', '/'); dispatchEvent(new PopStateEvent('popstate')); return true;");
     await waitFor(page, `document.querySelector('[data-open="${conversations[0]}"]')`, { label: 'conversation list' });
     await click(page, `[data-open="${conversations[0]}"]`);
     await waitFor(page, "document.querySelector('.chat-composer')", { label: 'composer' });
@@ -353,7 +354,7 @@ try {
     fs.writeFileSync(probeFile, 'export const build = "after";\n');
     await evaluate(page, "history.pushState({}, '', '/'); return true;");
     await page.send('Page.reload', { ignoreCache: false });
-    await waitFor(page, "document.querySelector('.bottom-nav')", { label: 'shell after redeploy' });
+    await waitFor(page, "document.querySelector('.tabbar')", { label: 'shell after redeploy' });
     const served = await evaluate(page, `
       const response = await fetch('/__deploy-probe.js');
       return (await response.text()).includes('after') ? 'fresh' : 'stale';`);

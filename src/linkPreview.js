@@ -31,8 +31,19 @@ function ipv4Private(ip) {
 export function isPrivateAddress(ip) {
   if (net.isIPv4(ip)) return ipv4Private(ip);
   const lower = ip.toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped) return ipv4Private(mapped[1]);
+  if (lower.startsWith('::ffff:')) {
+    const tail = lower.slice(7);
+    const dotted = /^(\d+\.\d+\.\d+\.\d+)$/.exec(tail);
+    if (dotted) return ipv4Private(dotted[1]);
+    // IPv4-mapped IPv6 may also be written as ::ffff:7f00:1.
+    const groups = tail.split(':');
+    if (groups.length <= 2 && groups.every(group => /^[0-9a-f]{1,4}$/.test(group))) {
+      const value = groups.length === 1 ? Number.parseInt(groups[0], 16) : Number.parseInt(groups[0], 16) * 65536 + Number.parseInt(groups[1], 16);
+      const mapped = [value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join('.');
+      return ipv4Private(mapped);
+    }
+    return true; // fail closed on an unusual mapped representation
+  }
   return lower === '::' || lower === '::1' || lower.startsWith('fc') || lower.startsWith('fd') || /^fe[89ab]/.test(lower) || lower.startsWith('ff');
 }
 
@@ -56,6 +67,10 @@ export function validatePreviewUrl(value) {
   return url;
 }
 
+export function resolveRedirect(location, base) {
+  try { return new URL(location, base).href; } catch { return null; }
+}
+
 function fetchOnce(url) {
   return new Promise((resolve, reject) => {
     const client = url.protocol === 'https:' ? https : http;
@@ -65,7 +80,7 @@ function fetchOnce(url) {
     }, response => {
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
         response.resume();
-        return resolve({ redirect: new URL(response.headers.location, url).href });
+        return resolve({ redirect: resolveRedirect(response.headers.location, url) });
       }
       if (response.statusCode !== 200 || !/text\/html|application\/xhtml/i.test(String(response.headers['content-type'] || ''))) {
         response.resume();

@@ -7,8 +7,9 @@ The app is a single Node process that needs one persistent directory (`data/`). 
 1. Set `NODE_ENV=production`, a 32+ character `APP_SECRET`, a private `SETUP_CODE`, and `APP_ORIGIN=https://your-host` (this switches cookies to `Secure` and enables HSTS).
 2. Point `DATABASE_PATH` and `UPLOAD_DIR` at the mounted volume, e.g. `/data/circle.db` and `/data/uploads`.
 3. Optionally add VAPID keys (`npm run vapid`) for push.
+4. Run `npm run check && npm test && npm run verify:deploy` before shipping. `npm run build` validates the exact static/PWA payload; no transpilation or generated JS bundle is needed.
 
-A ready-to-use `Dockerfile`, `.dockerignore`, `docker-entrypoint.sh`, and `fly.toml` are in the repository root. The image runs the source directly — there is no build step and no dependency install. The entrypoint creates the data directories on the mounted volume, fixes their ownership (volumes are mounted root-owned), and then runs the server as the unprivileged `node` user.
+A ready-to-use `Dockerfile`, `.dockerignore`, `docker-entrypoint.sh`, and `fly.toml` are in the repository root. The image runs the verified native source directly — there is no dependency install or transpilation step. The entrypoint creates the data directories on the mounted volume, fixes their ownership (volumes are mounted root-owned), and then runs the server as the unprivileged `node` user. Static text assets are served with cached Brotli/Gzip compression.
 
 ## Option A — Fly.io (recommended: free allowance, volumes, HTTPS)
 
@@ -31,9 +32,13 @@ npm run vapid
 fly secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:you@example.com
 ```
 
+Members enable it per device under **Settings → Notifications**. iPhone Web Push requires opening the installed Home Screen app (iOS 16.4+).
+
 ## Option B — Render / Railway
 
 Create a service from this repository (Docker or Node), start command `node --disable-warning=ExperimentalWarning src/server.js`, and attach a persistent disk mounted at `/data`. Set `NODE_ENV=production`, `APP_SECRET`, `SETUP_CODE`, `APP_ORIGIN`, `TRUST_PROXY=true`, `DATABASE_PATH=/data/circle.db`, `UPLOAD_DIR=/data/uploads`. Keep the instance count at 1. HTTPS is provided automatically.
+
+For Render, deploy the latest `main` commit after merging a pull request (**Manual Deploy → Deploy latest commit**) unless Auto-Deploy is enabled. Never deploy without a persistent disk: an ephemeral filesystem loses accounts, messages and uploads on restart.
 
 ## Option C — Any small VPS
 

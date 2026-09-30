@@ -2,7 +2,7 @@ import { config } from '../config.js';
 import { all, bootstrapGroupConversation, one, run, transaction } from '../db.js';
 import { clientIp, createSession, dummyPasswordCheck, getSession, hashPassword, rateLimit, sessionCookie, verifyPassword } from '../auth.js';
 import { blockedByIds } from '../privacy.js';
-import { broadcast, isOnline } from '../realtime.js';
+import { broadcast, disconnectSession, isOnline } from '../realtime.js';
 import { getSettings } from '../settings.js';
 import { cleanText, HttpError, iso, json, parseJson, publicUser, randomToken, sha256, validateUsername } from '../utils.js';
 
@@ -44,7 +44,7 @@ export function registerAuthRoutes(router) {
     const userRow = await createAccount(body, 'admin');
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
-    json(res, 201, { user: publicUser(userRow, true, { self: true }), csrfToken });
+    json(res, 201, { user: publicUser(userRow, true, { self: true }), settings: getSettings(userRow.id), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/register', async (req, res) => {
@@ -56,7 +56,7 @@ export function registerAuthRoutes(router) {
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
     broadcast('member:joined', { user: publicUser(userRow, true) }, null, userRow.id);
-    json(res, 201, { user: publicUser(userRow, true, { self: true }), csrfToken });
+    json(res, 201, { user: publicUser(userRow, true, { self: true }), settings: getSettings(userRow.id), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/login', async (req, res) => {
@@ -71,11 +71,12 @@ export function registerAuthRoutes(router) {
     if (!(await verifyPassword(String(body.password || ''), userRow.password_hash))) throw new HttpError(401, 'Incorrect username or password.');
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
-    json(res, 200, { user: publicUser(userRow, true, { self: true }), csrfToken });
+    json(res, 200, { user: publicUser(userRow, true, { self: true }), settings: getSettings(userRow.id), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/logout', (req, res) => {
     run('DELETE FROM sessions WHERE id = ?', req.session.id);
+    disconnectSession(req.session.id);
     res.setHeader('set-cookie', sessionCookie('', 0));
     json(res, 200, { ok: true });
   });

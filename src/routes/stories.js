@@ -1,4 +1,4 @@
-import { all, one, run } from '../db.js';
+import { all, one, run, transaction } from '../db.js';
 import { config } from '../config.js';
 import { getOrCreateDirectConversation } from '../conversations.js';
 import { createMessage, fanout } from '../messages.js';
@@ -73,12 +73,20 @@ export function registerStoryRoutes(router) {
   });
   router.put('/api/stories/privacy', async (req, res) => {
     const body = await parseJson(req);
+    const old = new Set(all('SELECT user_id FROM story_hidden WHERE author_id = ?', req.session.user.id).map(row => Number(row.user_id)));
     const ids = [...new Set((Array.isArray(body.hiddenFrom) ? body.hiddenFrom : []).map(Number))].filter(id => id !== req.session.user.id && one('SELECT id FROM users WHERE id = ?', id));
-    run('DELETE FROM story_hidden WHERE author_id = ?', req.session.user.id);
-    for (const id of ids) run('INSERT INTO story_hidden(author_id, user_id) VALUES (?, ?)', req.session.user.id, id);
-    // Members who can no longer see the stories drop them immediately.
-    const live = all('SELECT id FROM stories WHERE author_id = ? AND expires_at > ?', req.session.user.id, new Date().toISOString());
-    for (const story of live) sendMany(ids, 'story:deleted', { storyId: story.id });
+    const next = new Set(ids);
+    transaction(() => {
+      run('DELETE FROM story_hidden WHERE author_id = ?', req.session.user.id);
+      for (const id of ids) run('INSERT INTO story_hidden(author_id, user_id) VALUES (?, ?)', req.session.user.id, id);
+    });
+    const live = all(`${STORY_SELECT} WHERE s.author_id = ? AND s.expires_at > ? ORDER BY s.created_at`, req.session.user.id, new Date().toISOString());
+    const newlyHidden = ids.filter(id => !old.has(id));
+    const newlyAllowed = [...old].filter(id => !next.has(id) && canSeeStoriesOf(req.session.user.id, id));
+    for (const story of live) {
+      sendMany(newlyHidden, 'story:deleted', { storyId: story.id });
+      for (const viewerId of newlyAllowed) sendMany([viewerId], 'story:created', { story: formatStory(story, viewerId) });
+    }
     json(res, 200, { hiddenFrom: ids });
   });
 

@@ -78,7 +78,8 @@ export function encryptPushPayload(payload, clientPublicKey, authSecret) {
 
 export async function sendPushToUser(userId, payload) {
   if (!pushEnabled()) return { sent: 0, skipped: true };
-  const subscriptions = all('SELECT * FROM push_subscriptions WHERE user_id = ?', userId);
+  const subscriptions = all(`SELECT ps.* FROM push_subscriptions ps JOIN sessions s ON s.id = ps.session_id
+    WHERE ps.user_id = ? AND s.expires_at > ?`, userId, new Date().toISOString());
   let sent = 0;
   await Promise.all(subscriptions.map(async row => {
     let subscription;

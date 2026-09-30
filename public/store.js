@@ -431,11 +431,19 @@ export function applyRead(conversationId, userId, messageId) {
 
 export function markConversationRead(conversationId) {
   const conversation = conversationById(conversationId);
-  if (conversation && conversation.unread) { conversation.unread = 0; publish('conversations'); }
+  if (conversation && (conversation.unread || conversation.markedUnread)) { conversation.unread = 0; conversation.markedUnread = false; publish('conversations'); }
 }
 
+/** Chats with unread messages (muted and archived chats don't count toward the badge). */
 export function totalUnreadMessages() {
-  return state.conversations.items.reduce((sum, conversation) => sum + (conversation.muted ? 0 : conversation.unread || 0), 0);
+  return state.conversations.items.reduce((sum, conversation) => sum + (conversation.muted || conversation.archived ? 0 : (conversation.unread || (conversation.markedUnread ? 1 : 0))), 0);
+}
+
+export function removeConversation(conversationId) {
+  const id = Number(conversationId);
+  state.conversations.items = state.conversations.items.filter(item => item.id !== id);
+  state.messages.delete(id);
+  publish('conversations');
 }
 
 export function setTyping(conversationId, userId, typing, kind = 'text') {
@@ -496,6 +504,17 @@ export async function loadStickers(force = false) {
   state.stickers = { ...data, loaded: true };
   publish('stickers');
   return state.stickers;
+}
+
+/** Trims a long in-memory history back to its newest `keep` messages (bounded DOM and memory). */
+export function trimHistory(conversationId, keep = 120) {
+  const store = messageStore(conversationId);
+  const confirmed = store.items.filter(item => item.id);
+  if (confirmed.length <= keep * 1.5 || store.hasNewer) return false;
+  const cutoff = confirmed[confirmed.length - keep].id;
+  store.items = store.items.filter(item => !item.id || item.id >= cutoff);
+  store.nextCursor = cutoff;
+  return true;
 }
 
 export function resetState() {

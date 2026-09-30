@@ -4,7 +4,7 @@ import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createClient, dbModule, pngFixture, readEvent, server } from './helpers.mjs';
-import { isPrivateAddress, parsePreview, validatePreviewUrl } from '../src/linkPreview.js';
+import { isPrivateAddress, parsePreview, resolveRedirect, validatePreviewUrl } from '../src/linkPreview.js';
 
 const admin = createClient();
 const ana = createClient();
@@ -76,6 +76,19 @@ test('blocking closes the direct chat both ways and hides presence and stories',
   const seenByAna = (await ana.call('/api/members')).data.members.find(member => member.id === ctx.benId);
   assert.equal(seenByAna.lastSeenAt, null);
   assert.equal(seenByAna.presenceHidden, true);
+  const seenByBen = (await ben.call('/api/members')).data.members.find(member => member.id === ctx.anaId);
+  assert.equal(seenByBen.lastSeenAt, null);
+  assert.equal(seenByBen.presenceHidden, true, 'presence is hidden in both directions');
+
+  const controller = new AbortController();
+  const stream = await ana.call('/api/events', { stream: true, signal: controller.signal });
+  const reader = stream.response.body.getReader();
+  await readEvent(reader, 'connected');
+  await ben.call('/api/profile', { method: 'PATCH', body: { displayName: 'Ben Ode', bio: 'Updated while blocked' } });
+  const profileEvent = await readEvent(reader, 'profile:updated');
+  assert.equal('online' in profileEvent.user, false, 'profile broadcasts never carry viewer-independent presence');
+  assert.equal('lastSeenAt' in profileEvent.user, false);
+  controller.abort();
 
   const upload = await ben.call('/api/media?purpose=story', { method: 'POST', binary: { buffer: pngFixture, type: 'image/png', name: 's.png' } });
   const story = (await ben.call('/api/stories', { method: 'POST', body: { mediaId: upload.data.media.id } })).data.story;
@@ -90,17 +103,33 @@ test('blocking closes the direct chat both ways and hides presence and stories',
   ctx.benStoryId = story.id;
 });
 
-test('story privacy hides stories from chosen members and can turn replies off', async () => {
+test('story privacy hides stories from chosen members and synchronizes audience/reply changes', async () => {
+  const adminController = new AbortController();
+  const adminStream = await admin.call('/api/events', { stream: true, signal: adminController.signal });
+  const adminReader = adminStream.response.body.getReader();
+  await readEvent(adminReader, 'connected');
   const saved = await ben.call('/api/stories/privacy', { method: 'PUT', body: { hiddenFrom: [ctx.maraId, ctx.benId] } });
   assert.deepEqual(saved.data.hiddenFrom, [ctx.maraId], 'you cannot hide stories from yourself');
+  const removedEvent = await readEvent(adminReader, 'story:deleted');
+  assert.equal(removedEvent.storyId, ctx.benStoryId, 'newly hidden viewers lose a mounted live story immediately');
   assert.equal((await admin.call('/api/stories')).data.stories.some(item => item.id === ctx.benStoryId), false);
   assert.equal((await ana.call('/api/stories')).data.stories.some(item => item.id === ctx.benStoryId), true);
+  const anaController = new AbortController();
+  const anaStream = await ana.call('/api/events', { stream: true, signal: anaController.signal });
+  const anaReader = anaStream.response.body.getReader();
+  await readEvent(anaReader, 'connected');
   await ben.call('/api/settings', { method: 'PATCH', body: { privacy: { storyReplies: false } } });
+  await readEvent(anaReader, 'stories:refresh');
   const reply = await ana.call(`/api/stories/${ctx.benStoryId}/reply`, { method: 'POST', body: { body: 'nice' } });
   assert.equal(reply.status, 403);
   await ben.call('/api/settings', { method: 'PATCH', body: { privacy: { storyReplies: true } } });
+  await readEvent(anaReader, 'stories:refresh');
   await ben.call('/api/stories/privacy', { method: 'PUT', body: { hiddenFrom: [] } });
+  const restoredEvent = await readEvent(adminReader, 'story:created');
+  assert.equal(restoredEvent.story.id, ctx.benStoryId, 'newly allowed viewers regain live stories immediately');
   assert.equal((await admin.call('/api/stories')).data.stories.some(item => item.id === ctx.benStoryId), true);
+  adminController.abort();
+  anaController.abort();
 });
 
 test('read receipts are reciprocal when a member turns them off', async () => {
@@ -122,13 +151,21 @@ test('read receipts are reciprocal when a member turns them off', async () => {
 test('devices list the member\'s own sessions and can be signed out remotely', async () => {
   const second = createClient();
   await second.call('/api/auth/login', { method: 'POST', body: { username: 'ana', password: 'ana-password-1' }, headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Safari/605.1.15' } });
+  const deviceEndpoint = 'https://push.example.com/terminated-device';
+  await second.call('/api/push/subscribe', { method: 'POST', body: { endpoint: deviceEndpoint, keys: { p256dh: 'device-key', auth: 'device-auth' } } });
   const sessions = (await ana.call('/api/sessions')).data.sessions;
   assert.ok(sessions.length >= 2);
   assert.equal(sessions.filter(item => item.current).length, 1);
   const phone = sessions.find(item => item.device.os === 'iPhone');
   assert.ok(phone, 'devices are described from their user agent');
+  const stream = await second.call('/api/events', { stream: true });
+  const reader = stream.response.body.getReader();
+  await readEvent(reader, 'connected');
   assert.equal((await ben.call(`/api/sessions/${phone.id}`, { method: 'DELETE' })).status, 404, 'another member\'s session cannot be ended');
   assert.equal((await ana.call(`/api/sessions/${phone.id}`, { method: 'DELETE' })).status, 200);
+  const closed = await Promise.race([reader.read(), new Promise(resolve => setTimeout(() => resolve({ done: false }), 1500))]);
+  assert.equal(closed.done, true, 'remote sign-out immediately closes that device\'s realtime stream');
+  assert.equal(dbModule.one('SELECT COUNT(*) count FROM push_subscriptions WHERE endpoint = ?', deviceEndpoint).count, 0, 'remote sign-out revokes that device\'s push endpoint');
   assert.equal((await second.call('/api/feed')).status, 401, 'the removed device is signed out');
   const current = sessions.find(item => item.current);
   assert.equal((await ana.call(`/api/sessions/${current.id}`, { method: 'DELETE' })).status, 400);
@@ -153,8 +190,11 @@ test('archive, mark as unread, and delete-for-me organise chats per member', asy
   await ana.call(`/api/conversations/${ctx.directId}/read`, { method: 'POST', body: { messageId: last.id } });
   assert.equal((await ana.call(`/api/conversations/${ctx.directId}`)).data.conversation.markedUnread, false, 'reading clears the mark');
 
+  const privateUpload = await ben.call('/api/media?purpose=chat', { method: 'POST', binary: { buffer: pngFixture, type: 'image/png', name: 'before-clear.png' } });
+  await send(ben, ctx.directId, { kind: 'image', mediaId: privateUpload.data.media.id });
   const cleared = await ana.call(`/api/conversations/${ctx.directId}/clear`, { method: 'POST' });
   assert.equal(cleared.status, 200);
+  assert.equal((await ana.call(`/api/media/${privateUpload.data.media.id}`)).status, 403, 'cleared chat media is no longer readable by URL');
   assert.equal((await ana.call('/api/conversations')).data.conversations.some(item => item.id === ctx.directId), false, 'deleted chats leave the list');
   assert.equal((await ana.call(`/api/conversations/${ctx.directId}/messages`)).data.messages.length, 0);
   assert.ok((await ben.call(`/api/conversations/${ctx.directId}/messages`)).data.messages.length > 0, 'the other member keeps their history');
@@ -228,9 +268,20 @@ test('batch delete and batch forward act on many messages safely', async () => {
   const refused = await ana.call(`/api/conversations/${ctx.groupId}/messages/delete`, { method: 'POST', body: { messageIds: [...ids, foreign], scope: 'everyone' } });
   assert.equal(refused.status, 403, 'one foreign message blocks the whole batch');
   assert.equal(dbModule.one('SELECT COUNT(*) count FROM messages WHERE id IN (?, ?, ?) AND deleted_at IS NULL', ...ids).count, 3, 'nothing was deleted');
-  const forwarded = await ana.call('/api/messages/forward', { method: 'POST', body: { messageIds: [ids[1], ids[0]], conversationIds: [ctx.tripId] } });
+  const operation = { messageIds: [ids[1], ids[0]], conversationIds: [ctx.tripId], operationId: 'forward-batch-0001' };
+  const forwarded = await ana.call('/api/messages/forward', { method: 'POST', body: operation });
   assert.equal(forwarded.status, 201);
   assert.deepEqual(forwarded.data.messages.map(message => message.body), ['one', 'two'], 'forwarded in original order');
+  const retried = await ana.call('/api/messages/forward', { method: 'POST', body: operation });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.data.duplicate, true, 'retrying the operation returns the same rows without new writes or broadcasts');
+  assert.deepEqual(retried.data.messages.map(message => message.id), forwarded.data.messages.map(message => message.id));
+  const missingOperation = await ana.call('/api/messages/forward', { method: 'POST', body: { messageIds: [ids[0]], conversationIds: [ctx.tripId] } });
+  assert.equal(missingOperation.status, 400);
+  const many = Array.from({ length: 16 }, (_, index) => Number(dbModule.run("INSERT INTO messages(conversation_id, sender_id, kind, body) VALUES (?, ?, 'text', ?)", ctx.groupId, ctx.anaId, `bulk ${index}`).lastInsertRowid));
+  const tooLarge = await ana.call('/api/messages/forward', { method: 'POST', body: { messageIds: many, conversationIds: [ctx.tripId, ctx.groupId], operationId: 'forward-too-large-01' } });
+  assert.equal(tooLarge.status, 400, 'aggregate fan-out is capped before any write');
+  assert.equal(dbModule.one("SELECT COUNT(*) count FROM messages WHERE client_id LIKE 'fw_%'").count, 2, 'the rejected operation wrote nothing');
   const done = await ana.call(`/api/conversations/${ctx.groupId}/messages/delete`, { method: 'POST', body: { messageIds: ids, scope: 'everyone' } });
   assert.equal(done.data.deleted, 3);
   const mine = await ben.call(`/api/conversations/${ctx.groupId}/messages/delete`, { method: 'POST', body: { messageIds: [foreign, ids[0]], scope: 'me' } });
@@ -253,7 +304,7 @@ test('search filters by type and inside one chat, only within your chats', async
 });
 
 test('link previews refuse private and non-web addresses (SSRF protection)', async () => {
-  for (const address of ['127.0.0.1', '10.1.2.3', '192.168.0.10', '172.20.0.1', '169.254.169.254', '100.64.0.1', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1', '0.0.0.0']) {
+  for (const address of ['127.0.0.1', '10.1.2.3', '192.168.0.10', '172.20.0.1', '169.254.169.254', '100.64.0.1', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '0.0.0.0']) {
     assert.equal(isPrivateAddress(address), true, `${address} is private`);
   }
   assert.equal(isPrivateAddress('93.184.216.34'), false);
@@ -261,6 +312,8 @@ test('link previews refuse private and non-web addresses (SSRF protection)', asy
     assert.equal(validatePreviewUrl(url), null, `${url} is refused`);
   }
   assert.ok(validatePreviewUrl('https://example.com/page'));
+  assert.equal(resolveRedirect('http://[::broken', 'https://example.com'), null, 'malformed redirect locations are contained');
+  assert.equal(resolveRedirect('/next', 'https://example.com/start'), 'https://example.com/next');
 
   let hits = 0;
   const internal = http.createServer((req, res) => { hits += 1; res.writeHead(200, { 'content-type': 'text/html' }).end('<title>internal</title>'); });
