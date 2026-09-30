@@ -12,7 +12,7 @@ import { openEditProfile } from './profile.js';
 import { preparePhoto } from '../components/attach.js';
 import { pickFiles, uploadFiles } from '../components/media.js';
 
-const APP_VERSION = '3.0.2';
+const APP_VERSION = '3.0.3';
 const COLORS = { blue: '#3b82f6', gray: '#8e8e93', red: '#ef4444', green: '#22b573', purple: '#8b5cf6', teal: '#14b8a6', orange: '#f59e0b', indigo: '#6366f1', pink: '#ec4899' };
 
 /* --------------------------------- root --------------------------------- */
@@ -628,6 +628,39 @@ function renderLanguage(body) {
 
 /* ----------------------------------- about ----------------------------------- */
 
+/**
+ * Exact display geometry, shown so a device-only layout problem can be reported precisely instead of
+ * estimated from a screenshot. A gap below the tab bar means the web view itself is not reaching the
+ * bottom of the screen (safe area not covered), which no CSS inside the page can fill.
+ */
+function displayDiagnostics() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;left:-9999px;bottom:0;padding-bottom:env(safe-area-inset-bottom);padding-top:env(safe-area-inset-top)';
+  document.body.append(probe);
+  const probed = getComputedStyle(probe);
+  const safeBottom = Math.round(parseFloat(probed.paddingBottom) || 0);
+  const safeTop = Math.round(parseFloat(probed.paddingTop) || 0);
+  probe.remove();
+
+  const viewport = window.visualViewport;
+  const appRect = document.querySelector('#app')?.getBoundingClientRect();
+  const tabRect = document.querySelector('.tabbar')?.getBoundingClientRect();
+  const standalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  const visualBottom = Math.round((viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight));
+  const gap = tabRect ? Math.round(visualBottom - tabRect.bottom) : null;
+
+  return [
+    ['Mode', standalone ? 'installed (standalone)' : 'browser tab'],
+    ['Window', `${window.innerWidth}×${window.innerHeight}`],
+    ['Visual viewport', `${Math.round(viewport?.width || window.innerWidth)}×${Math.round(viewport?.height || window.innerHeight)} @${Math.round(viewport?.offsetTop || 0)}`],
+    ['Screen', `${window.screen?.width || '?'}×${window.screen?.height || '?'} ×${window.devicePixelRatio || 1}`],
+    ['Safe area', `top ${safeTop}px · bottom ${safeBottom}px`],
+    ['App box', appRect ? `${Math.round(appRect.width)}×${Math.round(appRect.height)} → bottom ${Math.round(appRect.bottom)}` : 'missing'],
+    ['Tab bar bottom', tabRect ? `${Math.round(tabRect.bottom)} of ${visualBottom}` : 'hidden'],
+    ['Uncovered below tabs', gap === null ? 'unknown' : `${gap}px`]
+  ];
+}
+
 function renderAbout(body) {
   const faq = [
     [t('How do I install Circle on my phone?'), t('On iPhone open Circle in Safari, tap Share, then Add to Home Screen. On Android open it in Chrome and choose Install app from the menu.')],
@@ -642,7 +675,9 @@ function renderAbout(body) {
     ${group([`<div class="padded legal"><p>${t('Circle is a private, invite-only space for a small group of friends. Accounts are created only with an invitation from the group admin.')}</p>
       <p>${t('Be kind. Don’t share anything you don’t have the right to share, and respect other members’ privacy. The admin can remove content that breaks the group’s trust.')}</p></div>`], { title: t('Terms') })}
     ${group([`<div class="padded legal"><p>${t('Your messages, posts, stories, and media are stored on the server run by your group admin and are visible only to members of your circle (private chats only to their members).')}</p>
-      <p>${t('Circle has no ads, no tracking, and no third-party analytics. Passwords are stored as salted hashes. Link previews are fetched by the server, so websites never see your address.')}</p></div>`], { title: t('Privacy') })}`;
+      <p>${t('Circle has no ads, no tracking, and no third-party analytics. Passwords are stored as salted hashes. Link previews are fetched by the server, so websites never see your address.')}</p></div>`], { title: t('Privacy') })}
+    ${group(displayDiagnostics().map(([label, value]) => `<div class="info-row"><span class="row-label">${escapeHtml(label)}</span><span class="info-value muted">${escapeHtml(String(value))}</span></div>`),
+      { title: t('Display'), footer: t('Share this with your admin if the layout looks wrong on your phone.') })}`;
   return null;
 }
 

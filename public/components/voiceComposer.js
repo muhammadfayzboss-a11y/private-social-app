@@ -11,7 +11,7 @@
  */
 import { icon } from '../icons.js';
 import { formatDuration } from '../lib/time.js';
-import { MAX_RECORDING_MS, recordingSupported, VoiceRecorder } from '../lib/recorder.js?v=7';
+import { MAX_RECORDING_MS, recordingSupported, VoiceRecorder } from '../lib/recorder.js?v=8';
 import { stopAll, toggle as togglePlayback } from '../lib/audio.js';
 import { settings } from '../lib/settings.js';
 import { t } from '../lib/i18n.js';
