@@ -2,7 +2,8 @@ import { request } from '../api.js';
 import { icon } from '../icons.js';
 import { navigate } from '../router.js';
 import { patchPost, removePost, state, upsertPost } from '../store.js';
-import { avatar, escapeHtml, fullTime, mediaView, modal, reactionIcon, REACTION_LABELS, timeAgo, toast } from '../ui.js';
+import { avatar, confirmSheet, escapeHtml, mediaView, modal, reactionIcon, REACTION_LABELS, toast } from '../ui.js';
+import { timeTag } from '../lib/time.js';
 import { REACTIONS } from './reactions.js';
 import { openSendToChat } from './share.js';
 
@@ -24,7 +25,7 @@ function commentMarkup(post) {
           <strong>${escapeHtml(comment.author.displayName)}</strong>${escapeHtml(comment.body)}
         </div>
         <div class="comment-meta">
-          <time datetime="${escapeHtml(comment.createdAt)}">${timeAgo(comment.createdAt)}</time>
+          ${timeTag(comment.createdAt)}
           · <button class="text-button comment-like${comment.viewerReaction ? ' liked' : ''}" data-action="comment-react" data-comment="${comment.id}">${comment.viewerReaction ? 'Liked' : 'Like'}</button>
           ${Object.values(comment.reactions || {}).reduce((sum, count) => sum + count, 0) ? `<span class="comment-like-count">${Object.values(comment.reactions).reduce((sum, count) => sum + count, 0)}</span>` : ''}
           · <button class="text-button" data-action="reply-comment" data-comment="${comment.id}" data-name="${escapeHtml(comment.author.username)}">Reply</button>
@@ -46,7 +47,7 @@ export function createPostCard(post) {
       <button class="avatar-button" data-action="open-profile" aria-label="Open ${escapeHtml(post.author.displayName)}'s profile">${avatar(post.author, 'md')}</button>
       <div class="post-author">
         <strong>${escapeHtml(post.author.displayName)}</strong>
-        <small>@${escapeHtml(post.author.username)} · <time datetime="${escapeHtml(post.createdAt)}" title="${escapeHtml(fullTime(post.createdAt))}">${timeAgo(post.createdAt)}</time>${post.editedAt ? ' · edited' : ''}</small>
+        <small>@${escapeHtml(post.author.username)} · ${timeTag(post.createdAt)}${post.editedAt ? ' · edited' : ''}</small>
       </div>
       ${canModerate ? `<button class="icon-button" data-action="post-menu" aria-label="Post options">${icon('more', 20)}</button>` : ''}
     </header>
@@ -158,7 +159,7 @@ function openPostMenu(post, isMine) {
     </div>`);
   sheet.querySelector('[data-menu="delete"]').addEventListener('click', async () => {
     sheet.remove();
-    if (!window.confirm('Delete this post permanently?')) return;
+    if (!(await confirmSheet({ title: 'Delete this post?', text: 'It will be removed for everyone, including its comments.', confirm: 'Delete post' }))) return;
     try {
       await request(`/api/posts/${post.id}`, { method: 'DELETE' });
       removePost(post.id);

@@ -405,18 +405,22 @@ test('stickers load from disk, send in chat, and track recents and favorites', a
   assert.ok(adminReload.data.stickersLoaded >= 6);
 });
 
-test('members can only delete their own messages, and deletions are tombstoned', async () => {
+test('members can only delete their own messages for everyone, and deleted messages leave every history', async () => {
   const sent = await ben.call(`/api/conversations/${context.groupId}/messages`, { method: 'POST', body: { kind: 'text', body: 'oops wrong chat' } });
-  const foreign = await ana.call(`/api/messages/${sent.data.message.id}`, { method: 'DELETE' });
+  const foreign = await ana.call(`/api/messages/${sent.data.message.id}?scope=everyone`, { method: 'DELETE' });
   assert.equal(foreign.status, 403);
 
   const removed = await ben.call(`/api/messages/${sent.data.message.id}`, { method: 'DELETE' });
   assert.equal(removed.status, 200);
+  assert.equal(removed.data.scope, 'everyone');
 
-  const messages = await ana.call(`/api/conversations/${context.groupId}/messages`);
-  const tombstone = messages.data.messages.find(message => message.id === sent.data.message.id);
-  assert.equal(tombstone.body, '');
-  assert.ok(tombstone.deletedAt);
+  for (const client of [ana, ben]) {
+    const messages = await client.call(`/api/conversations/${context.groupId}/messages`);
+    assert.equal(messages.data.messages.some(message => message.id === sent.data.message.id), false);
+  }
+  const stored = dbModule.one('SELECT body, deleted_at FROM messages WHERE id = ?', sent.data.message.id);
+  assert.equal(stored.body, '', 'content is erased from the database');
+  assert.ok(stored.deleted_at);
 });
 
 test('push subscriptions are stored per member', async () => {

@@ -25,6 +25,8 @@ export const config = {
   stickerDir: path.resolve(process.env.STICKER_DIR || './stickers'),
   sessionDays: Number(process.env.SESSION_DAYS || 30),
   maxUploadBytes: Number(process.env.MAX_UPLOAD_MB || 25) * 1024 * 1024,
+  // How long an author can still see their own expired stories (and who viewed them) in their archive.
+  storyArchiveDays: Math.min(Math.max(Number(process.env.STORY_ARCHIVE_DAYS || 30), 1), 365),
   secret: process.env.APP_SECRET || 'development-only-secret-change-before-deploying',
   setupCode: process.env.SETUP_CODE || 'circle-first-admin',
   secureCookies: (process.env.APP_ORIGIN || '').startsWith('https://'),

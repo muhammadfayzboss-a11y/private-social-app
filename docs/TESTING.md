@@ -3,10 +3,16 @@
 Two suites run against the real server, database, file storage, and a real browser. Last run: all green.
 
 ```text
-npm test               → 38 passed, 0 failed
-npm run verify:browser → 27 passed, 0 failed
+npm test               → 52 passed, 0 failed
+npm run verify:browser → 32 passed, 0 failed
 npm run verify:deploy  → 22 passed, 0 failed
 ```
+
+## Chat reliability (`tests/chat.test.mjs`, 14 tests)
+
+UTC ISO timestamps; `clientId` idempotency (sequential and concurrent re-sends store one message); voice duration/waveform stored once, range requests (prefix, suffix, clamped, 416); every member tab — including the sender's — receives exactly one `message:created`, and duplicates are never re-broadcast; author-only edits; delete for me vs. for everyone (content erased, media access revoked, realtime removal); `before`/`after`/`around` pagination; pinning, forwarding, per-member pin/mute; messages no longer create Activity rows; search scoped to the caller's conversations with escaped wildcards; hidden last-seen; own-story archive with de-duplicated viewers, private to the author; content-sniffed uploads; malformed cookies and push endpoints.
+
+Browser checks added: UTC+5 timezone shows "just now"; re-opening a chat three times then recording once (with a double-tapped send) produces exactly one voice message; only one voice message plays at a time; delete-for-everyone syncs to the other device; you can open your own story and see its viewers and archive.
 
 ## API, security, realtime, and push tests (`npm test`, 38 tests)
 

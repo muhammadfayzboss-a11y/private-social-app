@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS stories (
   FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_stories_active ON stories(expires_at, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stories_author ON stories(author_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stories_media ON stories(media_id);
 CREATE TABLE IF NOT EXISTS story_views (
   story_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
@@ -218,6 +220,16 @@ CREATE TABLE IF NOT EXISTS message_reactions (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- "Delete for me": hides a message from one member without affecting anyone else's history.
+CREATE TABLE IF NOT EXISTS message_hidden (
+  message_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  hidden_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id, message_id),
+  FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL,
@@ -240,3 +252,4 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);

@@ -110,6 +110,8 @@ try {
 
   const pageA = await openPage('admin', BASE);
   await mobileViewport(pageA);
+  // UTC+5 (Tashkent): SQLite UTC timestamps used to be read as local time here, showing "5h" for new messages.
+  await pageA.send('Emulation.setTimezoneOverride', { timezoneId: 'Asia/Tashkent' });
   await waitFor(pageA, "document.querySelector('.auth-card')", { label: 'auth screen' });
 
   await check('splash screen resolves into the sign-in experience on a phone viewport', async () => {
@@ -376,26 +378,153 @@ try {
 
   await check('message reactions sync to the other member', async () => {
     await evaluate(pageA, `
-      const bubble = [...document.querySelectorAll('.message')].find(node => node.textContent.includes('Dinner Friday'));
-      bubble.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      const bubble = [...document.querySelectorAll('.message-bubble')].find(node => node.textContent.includes('Dinner Friday'));
+      bubble.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
       return true;`);
-    await waitFor(pageA, "document.querySelector('.modal-sheet [data-react]')", { label: 'reaction sheet' });
+    await waitFor(pageA, "document.querySelector('.modal-sheet [data-react]')", { label: 'message action menu' });
+    await sleep(350);
+    await screenshot(pageA, '09b-message-menu');
     await click(pageA, '.modal-sheet [data-react]');
     await waitFor(pageB, "document.querySelector('.message-reaction')", { timeout: 9000, label: 'reaction on recipient device' });
     return 'reaction delivered';
   });
 
+  await check('a fresh message reads "just now" in a UTC+5 timezone (no timezone offset)', async () => {
+    const label = await evaluate(pageA, `
+      const row = [...document.querySelectorAll('.message')].find(node => node.textContent.includes('Dinner Friday'));
+      return row.querySelector('.message-meta time').textContent.trim();`);
+    if (label !== 'just now' && !/^\d+m$/.test(label)) throw new Error(`relative time was "${label}"`);
+    const offset = await evaluate(pageA, 'return new Date().getTimezoneOffset();');
+    if (offset !== -300) throw new Error(`timezone override not applied (${offset})`);
+    return `"${label}" at UTC+5`;
+  });
+
+  const groupIdFor = async page => (await apiCall(page, '/api/conversations')).data.conversations.find(item => item.kind === 'group').id;
+  const voiceCount = async page => (await apiCall(page, `/api/conversations/${await groupIdFor(page)}/messages`)).data.messages.filter(item => item.kind === 'voice').length;
+
+  await check('re-opening a chat several times, then recording once, sends exactly one voice message', async () => {
+    const groupId = await groupIdFor(pageA);
+    // Each visit used to leave a click listener behind, so one tap started one recorder per visit.
+    for (let visit = 0; visit < 3; visit += 1) {
+      await click(pageA, '[data-action="back"]');
+      await waitFor(pageA, `document.querySelector('[data-open="${groupId}"]')`, { label: 'chat list' });
+      await click(pageA, `[data-open="${groupId}"]`);
+      await waitFor(pageA, "document.querySelector('.chat-composer')", { label: 'composer' });
+    }
+    const before = await voiceCount(pageA);
+    await click(pageA, '[data-action="voice"]');
+    await waitFor(pageA, "!document.querySelector('[data-recording]').hidden", { label: 'recording bar' });
+    await click(pageA, '[data-action="voice"]'); // a second tap while recording must not start another recorder
+    await sleep(1600);
+    await screenshot(pageA, '10a-recording');
+    // Double-tap send: the recorder state machine and clientId idempotency keep this to one message.
+    await evaluate(pageA, "const b = document.querySelector('[data-action=\"send-recording\"]'); b.click(); b.click(); return true;");
+    await waitFor(pageA, "document.querySelector('.message.mine .voice') && !document.querySelector('.message.pending')", { timeout: 12000, label: 'voice message confirmed' });
+    await waitFor(pageB, "document.querySelectorAll('.message:not(.mine) .voice').length >= 1", { timeout: 10000, label: 'voice delivered' });
+    await sleep(800);
+    const after = await voiceCount(pageA);
+    const rendered = await evaluate(pageB, "return document.querySelectorAll('.message .voice').length;");
+    if (after - before !== 1) throw new Error(`expected exactly 1 new voice message on the server, got ${after - before}`);
+    if (rendered !== 1) throw new Error(`recipient renders ${rendered} voice messages`);
+    const info = await apiCall(pageA, `/api/conversations/${groupId}/messages`);
+    const voice = info.data.messages.filter(item => item.kind === 'voice').pop();
+    if (!(voice.media.durationMs > 800)) throw new Error(`duration not stored: ${voice.media.durationMs}`);
+    if (!voice.media.waveform?.length) throw new Error('waveform not stored');
+    await screenshot(pageB, '10b-voice-received');
+    return `1 message, ${voice.media.mimeType}, ${voice.media.durationMs}ms, ${voice.media.waveform.length} bars`;
+  });
+
+  await check('only one voice message plays at a time', async () => {
+    await click(pageA, '[data-action="voice"]');
+    await waitFor(pageA, "!document.querySelector('[data-recording]').hidden", { label: 'second recording' });
+    await sleep(1400);
+    await click(pageA, '[data-action="send-recording"]');
+    await waitFor(pageB, "document.querySelectorAll('.message:not(.mine) .voice').length >= 2", { timeout: 12000, label: 'second voice delivered' });
+    // Query by media id each time: rows may re-render (read receipts, reactions) while audio plays.
+    const result = await evaluate(pageB, `
+      const ids = [...document.querySelectorAll('.message .voice')].map(node => node.dataset.voice);
+      const node = id => document.querySelector('[data-voice="' + id + '"]');
+      const busy = id => node(id).classList.contains('is-playing') || node(id).classList.contains('is-loading');
+      node(ids[0]).querySelector('[data-voice-toggle]').click();
+      await new Promise(r => setTimeout(r, 700));
+      const firstPlaying = busy(ids[0]);
+      node(ids[1]).querySelector('[data-voice-toggle]').click();
+      await new Promise(r => setTimeout(r, 700));
+      const active = ids.filter(busy).length;
+      const secondActive = busy(ids[1]);
+      const firstStopped = !busy(ids[0]);
+      const errors = ids.filter(id => node(id).classList.contains('is-error')).map(id => node(id).textContent.trim());
+      node(ids[1]).querySelector('[data-voice-toggle]').click();
+      await new Promise(r => setTimeout(r, 200));
+      return { ids, firstPlaying, active, secondActive, firstStopped, media: document.querySelectorAll('audio').length, errors, pausedAfter: !busy(ids[1]) };`);
+    if (result.errors.length) throw new Error(`playback error: ${result.errors.join(' | ')}`);
+    if (!result.firstPlaying) throw new Error('first voice message did not start');
+    if (result.active !== 1 || !result.secondActive || !result.firstStopped) throw new Error(`expected only the second to play: ${JSON.stringify(result)}`);
+    if (result.media) throw new Error('per-message <audio> elements were rendered');
+    if (!result.pausedAfter) throw new Error('pause did not stop playback');
+    return 'starting the second paused the first; pause works';
+  });
+
+  await check('deleting my message for everyone removes it from both devices in real time', async () => {
+    await fill(pageA, '[data-input]', 'This one will be deleted');
+    await evaluate(pageA, "document.querySelector('[data-composer]').requestSubmit(); return true;");
+    await waitFor(pageB, "[...document.querySelectorAll('.message-bubble')].some(node => node.textContent.includes('will be deleted'))", { timeout: 9000, label: 'message delivered' });
+    await waitFor(pageA, "[...document.querySelectorAll('.message.mine:not(.pending) .message-bubble')].some(node => node.textContent.includes('will be deleted'))", { label: 'message confirmed' });
+    await evaluate(pageA, `
+      const bubble = [...document.querySelectorAll('.message-bubble')].find(node => node.textContent.includes('will be deleted'));
+      bubble.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      return true;`);
+    await waitFor(pageA, "document.querySelector('[data-menu=\"delete\"]')", { label: 'delete action' });
+    await click(pageA, '[data-menu="delete"]');
+    await waitFor(pageA, "document.querySelector('[data-sheet-action=\"everyone\"]')", { label: 'delete confirmation' });
+    await screenshot(pageA, '10c-delete-confirm');
+    await click(pageA, '[data-sheet-action="everyone"]');
+    await waitFor(pageB, "![...document.querySelectorAll('.message-bubble')].some(node => node.textContent.includes('will be deleted'))", { timeout: 9000, label: 'removed on the other device' });
+    const gone = await evaluate(pageA, "return ![...document.querySelectorAll('.message-bubble')].some(node => node.textContent.includes('will be deleted'));");
+    if (!gone) throw new Error('still visible for the sender');
+    return 'removed for sender and recipient';
+  });
+
   await check('activity feed records the interaction and clears its badge', async () => {
     await click(pageB, '[data-action="back"]');
-    await waitFor(pageB, "document.querySelector('.bottom-nav')");
+    await waitFor(pageB, "document.querySelector('.bottom-nav') && !document.querySelector('.shell-immersive')");
+    // Chat messages no longer flood Activity; a reaction to Ana's post is real activity.
+    const post = await apiCall(pageB, '/api/posts', { method: 'POST', body: { body: 'Summit selfie' } });
+    await apiCall(pageA, `/api/posts/${post.data.post.id}/reaction`, { method: 'POST', body: { reaction: 'heart' } });
+    await waitFor(pageB, "document.querySelector('[data-nav-activity-badge]:not([hidden])')", { timeout: 9000, label: 'activity badge' });
     await click(pageB, '[data-nav="/activity"]');
-    await waitFor(pageB, "document.querySelector('.activity-item, .empty-state')", { label: 'activity list' });
+    await waitFor(pageB, "document.querySelector('.activity-item')", { label: 'activity list' });
     const summary = await evaluate(pageB, `
+      await new Promise(resolve => setTimeout(resolve, 600));
       const items = [...document.querySelectorAll('.activity-item')];
-      return { count: items.length, first: items.length ? items[0].textContent.replace(/\\s+/g, ' ').trim() : 'empty' };`);
+      return { count: items.length, first: items.length ? items[0].textContent.replace(/\\s+/g, ' ').trim() : 'empty',
+               badge: !document.querySelector('[data-nav-activity-badge]').hidden };`);
     await screenshot(pageB, '10-activity');
-    if (!summary.count) throw new Error('no activity was recorded');
+    if (!/reacted to your post/.test(summary.first)) throw new Error(`unexpected activity: ${summary.first}`);
+    if (summary.badge) throw new Error('badge did not clear after opening Activity');
     return summary.first;
+  });
+
+  await check('I can open my own story and see who viewed it', async () => {
+    await click(pageA, '[data-action="back"]');
+    await click(pageA, '[data-nav="/"]');
+    await waitFor(pageA, "document.querySelector('.story-own [data-author]:not([data-author=\"new\"])')", { label: 'own story tile' });
+    await click(pageA, '.story-own [data-author]:not([data-author="new"])');
+    await waitFor(pageA, "document.querySelector('.story-viewer [data-story-action=\"viewers\"]')", { label: 'own story viewer' });
+    const label = await evaluate(pageA, "return document.querySelector('[data-story-action=\"viewers\"]').textContent.trim();");
+    await click(pageA, '[data-story-action="viewers"]');
+    await waitFor(pageA, "[...document.querySelectorAll('.modal-sheet .member-item')].some(node => node.textContent.includes('Ana'))", { label: 'viewer list' });
+    await screenshot(pageA, '10d-own-story-viewers');
+    await evaluate(pageA, "document.querySelector('.modal-backdrop').close(); return true;");
+    await sleep(300);
+    await click(pageA, '[data-story-action="close"]');
+    if (!/1 viewer/.test(label)) throw new Error(`viewer count was "${label}"`);
+
+    await click(pageA, '[data-nav="/profile"]');
+    await waitFor(pageA, "document.querySelector('.story-archive .archive-item')", { label: 'story archive on profile' });
+    const archive = await evaluate(pageA, "return document.querySelector('.archive-item .archive-meta').textContent.replace(/\\s+/g, ' ').trim();");
+    await screenshot(pageA, '10e-story-archive');
+    return `${label}; archive shows "${archive}"`;
   });
 
   await check('profile editing persists a new display name and bio', async () => {
@@ -414,8 +543,6 @@ try {
   });
 
   await check('the media tab shows the shared gallery', async () => {
-    await click(pageA, '[data-action="back"]');
-    await waitFor(pageA, "document.querySelector('.bottom-nav')");
     await click(pageA, '[data-nav="/profile"]');
     await waitFor(pageA, "document.querySelector('.profile-tabs')", { label: 'profile tabs' });
     await click(pageA, '[data-tab="media"]');
@@ -460,6 +587,8 @@ try {
     await click(pageA, '[data-action="settings"]');
     await waitFor(pageA, "document.querySelector('[data-action=\"logout\"]')");
     await click(pageA, '[data-action="logout"]');
+    await waitFor(pageA, "document.querySelector('[data-sheet-action=\"confirm\"]')", { label: 'sign-out confirmation' });
+    await click(pageA, '[data-sheet-action="confirm"]');
     await waitFor(pageA, "document.querySelector('.auth-card')", { timeout: 15000, label: 'sign-in screen' });
     const locked = await evaluate(pageA, `
       const response = await fetch('/api/feed', { credentials: 'same-origin' });
