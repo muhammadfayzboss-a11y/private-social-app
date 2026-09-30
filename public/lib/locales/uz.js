@@ -137,6 +137,7 @@ export default {
   "{n} session ended": "{n} seans tugatildi", "{n} sessions ended": "{n} seans tugatildi",
   "Language": "Til", "Dates and times follow the chosen language.": "Sana va vaqt tanlangan tilga mos ko‘rsatiladi.",
   "Help and About": "Yordam va ilova haqida", "Help": "Yordam", "Terms": "Shartlar", "Version {version}": "Versiya {version}",
+  "Display": "Ekran", "Share this with your admin if the layout looks wrong on your phone.": "Telefoningizda ko‘rinish noto‘g‘ri bo‘lsa, bu ma’lumotni administratorga yuboring.",
   "Install app": "Ilovani o‘rnatish", "Install Circle": "Circle’ni o‘rnating", "Add Circle to your home screen": "Circle’ni bosh ekranga qo‘shing",
   "Opens full screen like a native app, with notifications and a home-screen icon.": "Mahalliy ilova kabi to‘liq ekranda, bildirishnomalar va bosh ekran belgisi bilan ochiladi.",
   "Open this page in Safari.": "Bu sahifani Safari’da oching.", "Open this page in Chrome.": "Bu sahifani Chrome’da oching.", "Tap the Share button": "Ulashish tugmasini bosing", "Tap the menu ⋮ in the top corner.": "Yuqori burchakdagi ⋮ menyuni bosing.",

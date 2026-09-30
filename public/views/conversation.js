@@ -21,7 +21,7 @@ import { openMessageFocus } from '../components/messageFocus.js';
 import { bindVoice, paintVoice } from '../components/voice.js';
 import { createEmojiPanel } from '../components/emojiPanel.js';
 import { openAttachMenu, openAttachPreview, preparePhoto, prepareVideo } from '../components/attach.js';
-import { createVoiceComposer } from '../components/voiceComposer.js?v=7';
+import { createVoiceComposer } from '../components/voiceComposer.js?v=8';
 import { conversationAvatar, otherMember } from '../components/chatRow.js';
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;

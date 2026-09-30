@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, interactive-widget=resizes-content">
+  <!-- viewport-fit=cover must stay for the app to reach into the iPhone safe areas. maximum-scale is
+       deliberately omitted: it blocks pinch zoom and can influence how iOS sizes the layout viewport. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#17171f" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
@@ -28,9 +30,9 @@
   <link rel="apple-touch-startup-image" href="/icons/splash/splash-1536x2048.png" media="(device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
   <link rel="apple-touch-startup-image" href="/icons/splash/splash-1668x2388.png" media="(device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
   <link rel="apple-touch-startup-image" href="/icons/splash/splash-2048x2732.png" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
-  <link rel="stylesheet" href="/styles.css?v=7">
-  <link rel="stylesheet" href="/mobile.css?v=7">
-  <link rel="modulepreload" href="/app.js?v=7">
+  <link rel="stylesheet" href="/styles.css?v=8">
+  <link rel="stylesheet" href="/mobile.css?v=8">
+  <link rel="modulepreload" href="/app.js?v=8">
   <script src="/boot-theme.js"></script>
   <title>Circle</title>
 </head>
@@ -40,6 +42,6 @@
   </div>
   <main id="app" aria-live="polite"></main>
   <div id="toast-region" class="toast-region" aria-live="assertive"></div>
-  <script type="module" src="/app.js?v=7"></script>
+  <script type="module" src="/app.js?v=8"></script>
 </body>
 </html>

@@ -16,7 +16,7 @@ const app = document.querySelector('#app');
 const splash = document.querySelector('#splash');
 let shell = null;
 let sessionStarted = false;
-const BUILD_VERSION = '7';
+const BUILD_VERSION = '8';
 
 /*
  * iOS can report different percentage, dynamic, and visual viewport heights after standalone
