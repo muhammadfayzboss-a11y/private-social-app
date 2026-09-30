@@ -1,5 +1,6 @@
 import { nowIso } from './utils.js';
 import { one, run } from './db.js';
+import { blockedIds } from './privacy.js';
 
 const clients = new Map();
 let sequence = 0;
@@ -16,6 +17,12 @@ function hidesPresence(userId) {
   return Number(one('SELECT show_last_seen FROM users WHERE id = ?', userId)?.show_last_seen ?? 1) === 0;
 }
 
+/** Presence goes to everyone connected except the member themselves and anyone they blocked. */
+function announcePresence(userId, data) {
+  const blocked = blockedIds(userId);
+  for (const id of [...clients.keys()]) if (id !== userId && !blocked.has(id)) send(id, 'presence', data);
+}
+
 export function connect(userId, req, res) {
   userId = Number(userId);
   res.writeHead(200, {
@@ -30,7 +37,7 @@ export function connect(userId, req, res) {
   const firstConnection = !clients.has(userId);
   if (!clients.has(userId)) clients.set(userId, new Set());
   clients.get(userId).add(res);
-  if (firstConnection && !hidesPresence(userId)) broadcast('presence', { userId, online: true }, null, userId);
+  if (firstConnection && !hidesPresence(userId)) announcePresence(userId, { userId, online: true });
   const close = () => {
     const connections = clients.get(userId);
     if (!connections?.has(res)) return;
@@ -39,7 +46,7 @@ export function connect(userId, req, res) {
       clients.delete(userId);
       const at = nowIso();
       run('UPDATE users SET last_seen_at = ? WHERE id = ?', at, userId);
-      if (!hidesPresence(userId)) broadcast('presence', { userId, online: false, lastSeenAt: at }, null, userId);
+      if (!hidesPresence(userId)) announcePresence(userId, { userId, online: false, lastSeenAt: at });
     }
   };
   req.on('close', close);

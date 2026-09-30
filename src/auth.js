@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { config } from './config.js';
 import { one, run } from './db.js';
-import { addDays, HttpError, parseCookies, publicUser, randomToken, safeEqual, sha256 } from './utils.js';
+import { addDays, HttpError, iso, parseCookies, publicUser, randomToken, safeEqual, sha256 } from './utils.js';
 
 const scrypt = promisify(crypto.scrypt);
 
@@ -45,9 +45,13 @@ export function createSession(userId, req) {
 export function getSession(req) {
   const token = parseCookies(req.headers.cookie).circle_session;
   if (!token) return null;
-  const session = one(`SELECT s.*, u.username, u.display_name, u.bio, u.role, u.avatar_media_id, u.last_seen_at, u.show_last_seen, u.created_at
+  const session = one(`SELECT s.*, u.username, u.display_name, u.bio, u.role, u.avatar_media_id, u.last_seen_at, u.show_last_seen, u.read_receipts, u.created_at
     FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?`, sha256(token), new Date().toISOString());
   if (!session) return null;
+  // Keep "last active" fresh for the Devices screen without writing on every request.
+  if (!(Date.now() - Date.parse(iso(session.last_used_at)) < 5 * 60000)) {
+    run('UPDATE sessions SET last_used_at = ? WHERE id = ?', new Date().toISOString(), session.id);
+  }
   return { id: session.id, csrfToken: session.csrf_token, user: publicUser({ ...session, id: session.user_id }, true, { self: true }) };
 }
 

@@ -15,11 +15,12 @@ import { registerSocialRoutes } from './routes/social.js';
 import { registerStoryRoutes } from './routes/stories.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerActivityRoutes } from './routes/activity.js';
+import { registerAccountRoutes } from './routes/account.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const publicDir = path.join(root, 'public');
 const router = new Router();
-registerAuthRoutes(router); registerSocialRoutes(router); registerStoryRoutes(router); registerChatRoutes(router); registerActivityRoutes(router);
+registerAuthRoutes(router); registerSocialRoutes(router); registerStoryRoutes(router); registerChatRoutes(router); registerActivityRoutes(router); registerAccountRoutes(router);
 router.get('/api/health', (req,res)=>json(res,200,{status:'ok',time:new Date().toISOString()}), { public:true });
 router.get('/api/events', (req,res)=>connect(req.session.user.id,req,res));
 syncStickerPacks();

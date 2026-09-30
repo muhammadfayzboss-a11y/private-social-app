@@ -101,7 +101,7 @@ test('an offline member receives an encrypted push notification for new activity
   assert.match(request.headers.authorization, /^vapid t=[\w-]+\.[\w-]+\.[\w-]+, k=/);
   const payload = decryptPushBody(request.body);
   assert.match(payload.body, /Ana Ruiz commented on your post: Stunning shot/);
-  assert.match(payload.url, /^\/\?post=\d+$/);
+  assert.match(payload.url, /^\/feed\?post=\d+$/);
 });
 
 test('expired push endpoints are removed after a 410 response', async () => {

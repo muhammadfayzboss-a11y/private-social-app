@@ -1,7 +1,9 @@
 import { config } from '../config.js';
 import { all, bootstrapGroupConversation, one, run, transaction } from '../db.js';
 import { clientIp, createSession, dummyPasswordCheck, getSession, hashPassword, rateLimit, sessionCookie, verifyPassword } from '../auth.js';
+import { blockedByIds } from '../privacy.js';
 import { broadcast, isOnline } from '../realtime.js';
+import { getSettings } from '../settings.js';
 import { cleanText, HttpError, iso, json, parseJson, publicUser, randomToken, sha256, validateUsername } from '../utils.js';
 
 function setSession(res, session) {
@@ -28,7 +30,10 @@ async function createAccount(body, role = 'member', invite = null) {
 export function registerAuthRoutes(router) {
   router.get('/api/auth/status', (req, res) => {
     const session = getSession(req);
-    json(res, 200, { authenticated: Boolean(session), needsSetup: !one('SELECT id FROM users LIMIT 1'), user: session?.user || null, csrfToken: session?.csrfToken || null, serverTime: new Date().toISOString() });
+    json(res, 200, {
+      authenticated: Boolean(session), needsSetup: !one('SELECT id FROM users LIMIT 1'), user: session?.user || null,
+      settings: session ? getSettings(session.user.id) : null, csrfToken: session?.csrfToken || null, serverTime: new Date().toISOString()
+    });
   }, { public: true });
 
   router.post('/api/auth/bootstrap', async (req, res) => {
@@ -93,6 +98,7 @@ export function registerAuthRoutes(router) {
 
   router.get('/api/members', (req, res) => {
     const viewerId = req.session.user.id;
-    json(res, 200, { members: all('SELECT * FROM users ORDER BY display_name').map(user => publicUser(user, isOnline(user.id), { self: user.id === viewerId })) });
+    const hiddenFrom = blockedByIds(viewerId);
+    json(res, 200, { members: all('SELECT * FROM users ORDER BY display_name').map(user => publicUser(user, isOnline(user.id), { self: user.id === viewerId, hiddenFrom })) });
   });
 }

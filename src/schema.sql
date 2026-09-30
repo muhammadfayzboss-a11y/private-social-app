@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY,
   conversation_id INTEGER NOT NULL,
   sender_id INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('text','image','video','voice','sticker','story_reply')),
+  kind TEXT NOT NULL CHECK(kind IN ('text','image','video','voice','sticker','story_reply','file')),
   body TEXT NOT NULL DEFAULT '',
   media_id INTEGER,
   sticker_id TEXT,
@@ -218,6 +218,35 @@ CREATE TABLE IF NOT EXISTS message_reactions (
   PRIMARY KEY(message_id, user_id),
   FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Blocking is per member: the blocker stops receiving direct messages, stories, and presence from them.
+CREATE TABLE IF NOT EXISTS user_blocks (
+  blocker_id INTEGER NOT NULL,
+  blocked_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(blocker_id, blocked_id),
+  FOREIGN KEY (blocker_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (blocked_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Story privacy: an author's stories are never shown to (or readable by) these members.
+CREATE TABLE IF NOT EXISTS story_hidden (
+  author_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  PRIMARY KEY(author_id, user_id),
+  FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Cached link previews (title/description only; fetched server-side with SSRF protection).
+CREATE TABLE IF NOT EXISTS link_previews (
+  url TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  site_name TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT NOT NULL
 );
 
 -- "Delete for me": hides a message from one member without affecting anyone else's history.
