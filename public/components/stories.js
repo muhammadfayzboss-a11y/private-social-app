@@ -1,7 +1,8 @@
 import { request } from '../api.js';
 import { icon } from '../icons.js';
-import { activeStoryGroups, loadStories, removeStory, state, upsertStory } from '../store.js';
-import { avatar, escapeHtml, modal, timeAgo, toast } from '../ui.js';
+import { activeStoryGroups, loadStories, removeStory, state, subscribe, upsertStory } from '../store.js';
+import { avatar, confirmSheet, escapeHtml, modal, toast } from '../ui.js';
+import { exactTime, relativeTime } from '../lib/time.js';
 import { pickFiles, uploadFiles } from './media.js';
 
 export function createStoriesTray() {
@@ -19,20 +20,34 @@ export function createStoriesTray() {
 
 export function renderStoriesTray(section) { render(section); }
 
+/**
+ * "Your story" opens your own live stories (with who viewed them) when you have any; the small "+"
+ * always adds a new one. Previously the tile only ever opened the uploader, so members could not
+ * watch their own story or see its viewers.
+ */
 function render(section) {
   const groups = activeStoryGroups();
   const mine = groups.find(group => group.author.id === state.user?.id);
+  const views = mine ? new Set(mine.stories.flatMap(story => (story.views || []).map(view => view.user.id))).size : 0;
   section.innerHTML = `<div class="stories-row">
-    <button class="story-avatar" data-author="new">
-      <span class="story-ring ${mine ? '' : 'viewed'} story-add">${avatar(state.user, 'md')}</span>
-      <small>Your story</small>
-    </button>
+    <div class="story-avatar story-own">
+      <button class="story-open" ${mine ? `data-author="${state.user.id}"` : 'data-author="new"'} aria-label="${mine ? 'View your story' : 'Add to your story'}">
+        <span class="story-ring ${mine ? '' : 'viewed'}">${avatar(state.user, 'md')}</span>
+      </button>
+      <button class="story-add-badge" data-author="new" aria-label="Add to your story">${icon('plus', 14)}</button>
+      <small>${mine ? `${icon('eye', 11)} ${views}` : 'Your story'}</small>
+    </div>
     ${groups.filter(group => group.author.id !== state.user?.id).map(group => `
       <button class="story-avatar" data-author="${group.author.id}">
         <span class="story-ring${group.allViewed ? ' viewed' : ''}">${avatar(group.author, 'md')}</span>
         <small>${escapeHtml(group.author.displayName.split(' ')[0])}</small>
       </button>`).join('')}
   </div>`;
+}
+
+function viewerList(views) {
+  if (!views?.length) return '<p class="field-hint">No views yet. You will see each viewer here once, with the time they watched.</p>';
+  return `<div class="member-list">${views.map(view => `<div class="member-item">${avatar(view.user, 'sm')}<div><strong>${escapeHtml(view.user.displayName)}</strong><small title="${escapeHtml(exactTime(view.viewedAt))}">${escapeHtml(relativeTime(view.viewedAt))}</small></div>${view.reaction ? `<span class="viewer-reaction">${escapeHtml(view.reaction)}</span>` : ''}</div>`).join('')}</div>`;
 }
 
 export async function addStory() {
@@ -65,11 +80,12 @@ export async function addStory() {
   });
 }
 
-export function openStoryViewer(authorId) {
+export function openStoryViewer(authorId, { storyId = null } = {}) {
   const groups = activeStoryGroups();
   let groupIndex = groups.findIndex(group => group.author.id === Number(authorId));
-  if (groupIndex < 0) return;
-  let index = Math.max(0, groups[groupIndex].stories.findIndex(story => !story.viewed && story.author.id !== state.user?.id));
+  if (groupIndex < 0) return toast('This story is no longer available.');
+  const requested = storyId ? groups[groupIndex].stories.findIndex(story => story.id === Number(storyId)) : -1;
+  let index = requested >= 0 ? requested : Math.max(0, groups[groupIndex].stories.findIndex(story => !story.viewed && story.author.id !== state.user?.id));
   let timer = null;
 
   const overlay = document.createElement('div');
@@ -77,12 +93,30 @@ export function openStoryViewer(authorId) {
   document.body.append(overlay);
   document.body.style.overflow = 'hidden';
 
+  // Live viewer count while the author watches their own story.
+  const unsubscribe = subscribe((event, payload) => {
+    if (event !== 'story:viewed') return;
+    const story = groups[groupIndex]?.stories[index];
+    if (story && story.id === payload.storyId) {
+      const button = overlay.querySelector('[data-story-action="viewers"]');
+      if (button) button.innerHTML = `${icon('eye', 18)} ${story.views?.length || 0} ${story.views?.length === 1 ? 'viewer' : 'viewers'}`;
+    }
+  });
+
   const close = () => {
     clearTimeout(timer);
+    unsubscribe();
+    document.removeEventListener('keydown', onKey);
     overlay.remove();
     document.body.style.overflow = '';
     loadStories().catch(() => {});
   };
+  const onKey = event => {
+    if (event.key === 'Escape') close();
+    if (event.key === 'ArrowRight') advance(1);
+    if (event.key === 'ArrowLeft') advance(-1);
+  };
+  document.addEventListener('keydown', onKey);
 
   const advance = (step = 1) => {
     const group = groups[groupIndex];
@@ -105,7 +139,7 @@ export function openStoryViewer(authorId) {
       <div class="story-progress">${group.stories.map((item, position) => `<i class="${position === index ? 'active' : position < index ? 'done' : ''}"></i>`).join('')}</div>
       <header class="story-view-head">
         ${avatar(story.author, 'sm')}
-        <div><strong>${escapeHtml(story.author.displayName)}</strong> <time>${timeAgo(story.createdAt)}</time></div>
+        <div><strong>${escapeHtml(isMine ? 'Your story' : story.author.displayName)}</strong> <time title="${escapeHtml(exactTime(story.createdAt))}">${relativeTime(story.createdAt)}</time></div>
         ${isMine ? `<button class="icon-button" data-story-action="delete" aria-label="Delete story">${icon('trash', 19)}</button>` : ''}
         <button class="icon-button" data-story-action="close" aria-label="Close stories">${icon('close', 22)}</button>
       </header>
@@ -118,7 +152,7 @@ export function openStoryViewer(authorId) {
         ${story.caption ? `<p class="story-caption">${escapeHtml(story.caption)}</p>` : ''}
       </div>
       ${isMine
-        ? `<div class="story-controls"><button class="button button-ghost" data-story-action="viewers">${icon('users', 18)} ${story.views?.length || 0} ${story.views?.length === 1 ? 'view' : 'views'}</button></div>`
+        ? `<div class="story-controls"><button class="button button-ghost" data-story-action="viewers">${icon('eye', 18)} ${story.views?.length || 0} ${story.views?.length === 1 ? 'viewer' : 'viewers'}</button></div>`
         : `<div class="story-controls">
             <input placeholder="Reply to ${escapeHtml(story.author.displayName.split(' ')[0])}…" data-story-reply aria-label="Reply to story">
             <button class="icon-button" data-story-action="react" aria-label="React with a heart">${icon('heart', 22, Boolean(story.viewerReaction))}</button>
@@ -168,21 +202,25 @@ export function openStoryViewer(authorId) {
       }
       if (action === 'delete') {
         clearTimeout(timer);
-        if (!window.confirm('Delete this story?')) return draw();
+        if (!(await confirmSheet({ title: 'Delete this story?', text: 'It disappears for everyone right away.', confirm: 'Delete story' }))) return draw();
         await request(`/api/stories/${story.id}`, { method: 'DELETE' });
         removeStory(story.id);
         close();
       }
       if (action === 'viewers') {
         clearTimeout(timer);
-        const viewers = story.views || [];
-        modal(`<div class="modal-head"><h2>Viewers</h2><button class="icon-button" data-close-modal aria-label="Close">${icon('close', 20)}</button></div>
-          ${viewers.length ? `<div class="member-list">${viewers.map(view => `<div class="member-item">${avatar(view.user, 'sm')}<div><strong>${escapeHtml(view.user.displayName)}</strong><small>${timeAgo(view.viewedAt)}</small></div></div>`).join('')}</div>`
-            : '<p class="field-hint">No views yet.</p>'}`).addEventListener('click', event2 => { if (event2.target.closest('[data-close-modal]')) draw(); });
+        const sheet = modal(`<div class="modal-head"><h2>Viewers</h2><button class="icon-button" data-close-modal aria-label="Close">${icon('close', 20)}</button></div>
+          <div data-viewers>${viewerList(story.views)}</div>`);
+        sheet.addEventListener('sheet:closed', () => { if (overlay.isConnected) draw(); }, { once: true });
+        // Refresh from the server so the list is authoritative even if an event was missed.
+        request(`/api/stories/${story.id}/views`).then(({ views }) => {
+          story.views = views;
+          const target = sheet.querySelector('[data-viewers]');
+          if (target) target.innerHTML = viewerList(views);
+        }).catch(() => {});
       }
     } catch (error) { toast(error.message, 'error'); }
   });
 
-  overlay.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
   draw();
 }

@@ -1,7 +1,8 @@
 import { icon } from '../icons.js';
 import { navigate } from '../router.js';
 import { loadActivity, markActivityRead, state, subscribe } from '../store.js';
-import { avatar, emptyState, escapeHtml, skeleton, timeAgo } from '../ui.js';
+import { avatar, emptyState, escapeHtml, listSkeleton } from '../ui.js';
+import { timeTag } from '../lib/time.js';
 
 const summaries = {
   post_reaction: 'reacted to your post',
@@ -16,9 +17,9 @@ const summaries = {
 export function renderActivity(host) {
   host.innerHTML = `
     <div class="page">
-      <div class="page-title"><div><h1>Activity</h1><p>Everything happening in your circle.</p></div>
+      <div class="page-title"><div><h1>Activity</h1><p>Reactions, comments, and story replies.</p></div>
         <button class="button button-ghost" data-action="read-all">${icon('check', 18)} Mark read</button></div>
-      <div data-list>${skeleton(3)}</div>
+      <div data-list>${listSkeleton(5)}</div>
     </div>`;
 
   const list = host.querySelector('[data-list]');
@@ -27,7 +28,7 @@ export function renderActivity(host) {
     if (!state.activity.loaded) return;
     const items = state.activity.items;
     if (!items.length) {
-      list.innerHTML = emptyState('bell', 'No activity yet', 'Reactions, comments, stories, and messages will show up here.');
+      list.innerHTML = emptyState('bell', 'No activity yet', 'Reactions, comments, and story replies will show up here. Chat messages live in Chats.');
       return;
     }
     list.innerHTML = `<div class="activity-list">${items.map(item => `
@@ -36,7 +37,7 @@ export function renderActivity(host) {
         <span class="activity-content">
           <strong>${escapeHtml(item.actor?.displayName || 'Someone')}</strong>
           ${escapeHtml(summaries[item.kind] || 'interacted with your content')}${item.message && !['post_reaction', 'story_reaction', 'comment_reaction'].includes(item.kind) ? `: “${escapeHtml(item.message)}”` : ''}
-          <time>${timeAgo(item.createdAt)}</time>
+          ${timeTag(item.createdAt)}
         </span>
         ${item.readAt ? '' : '<span class="activity-dot"></span>'}
       </button>`).join('')}</div>`;
@@ -48,12 +49,14 @@ export function renderActivity(host) {
     if (!item) return;
     if (item.dataset.entity === 'conversation') navigate(`/chat/${item.dataset.id}`);
     else if (item.dataset.entity === 'post') navigate(`/?post=${item.dataset.id}`);
+    // Story reactions and replies belong to your own stories: open your archive with its viewers.
+    else if (item.dataset.entity === 'story') navigate('/profile');
     else navigate('/');
   });
 
   const unsubscribe = subscribe(event => { if (event === 'activity') draw(); });
   loadActivity().then(() => { draw(); markActivityRead().catch(() => {}); }).catch(error => {
-    list.innerHTML = emptyState('close', 'Could not load activity', error.message);
+    list.innerHTML = emptyState('alert', 'Could not load activity', error.message);
   });
   draw();
   return unsubscribe;

@@ -3,7 +3,8 @@ import { all, one, run, transaction } from '../db.js';
 import { isOnline, broadcast } from '../realtime.js';
 import { notify } from '../notifications.js';
 import { receiveUpload, sendMedia } from '../storage.js';
-import { cleanText, HttpError, json, parseJson, publicUser } from '../utils.js';
+import { rateLimit } from '../auth.js';
+import { cleanText, HttpError, iso, json, parseJson, publicUser } from '../utils.js';
 
 const allowedReactions = new Set(REACTIONS);
 function reaction(value) {
@@ -16,7 +17,7 @@ function formatComment(row, viewerId) {
   const reactions = all('SELECT reaction, COUNT(*) count FROM comment_reactions WHERE comment_id = ? GROUP BY reaction', row.id);
   const mine = one('SELECT reaction FROM comment_reactions WHERE comment_id = ? AND user_id = ?', row.id, viewerId)?.reaction || null;
   return {
-    id: row.id, postId: row.post_id, parentId: row.parent_id, body: row.body, editedAt: row.edited_at, createdAt: row.created_at,
+    id: row.id, postId: row.post_id, parentId: row.parent_id, body: row.body, editedAt: iso(row.edited_at), createdAt: iso(row.created_at),
     author: { id: row.author_id, username: row.username, displayName: row.display_name, avatarUrl: row.avatar_media_id ? `/api/media/${row.avatar_media_id}` : null },
     reactions: Object.fromEntries(reactions.map(item => [item.reaction, Number(item.count)])), viewerReaction: mine
   };
@@ -30,7 +31,7 @@ export function formatPost(row, viewerId) {
   const comments = all(`SELECT c.*, u.username, u.display_name, u.avatar_media_id FROM comments c JOIN users u ON u.id = c.author_id
     WHERE c.post_id = ? ORDER BY c.created_at`, row.id).map(comment => formatComment(comment, viewerId));
   return {
-    id: row.id, body: row.body, editedAt: row.edited_at, createdAt: row.created_at,
+    id: row.id, body: row.body, editedAt: iso(row.edited_at), createdAt: iso(row.created_at),
     author: { id: row.author_id, username: row.username, displayName: row.display_name, avatarUrl: row.avatar_media_id ? `/api/media/${row.avatar_media_id}` : null },
     media, reactions: Object.fromEntries(reactions.map(item => [item.reaction, Number(item.count)])), viewerReaction: mine, comments
   };
@@ -44,6 +45,7 @@ export function registerSocialRoutes(router) {
   router.post('/api/media', async (req, res) => {
     const purpose = String(new URL(req.url, 'http://local').searchParams.get('purpose') || 'general');
     if (!['avatar','post','story','chat','voice'].includes(purpose)) throw new HttpError(400, 'Unsupported upload purpose.');
+    rateLimit(`upload:${req.session.user.id}`, 40, 60000);
     const media = await receiveUpload(req, req.session.user.id, purpose);
     json(res, 201, { media: { id: media.id, url: `/api/media/${media.id}`, mimeType: media.mime_type, sizeBytes: media.size_bytes } });
   }, { raw: true });
@@ -52,8 +54,14 @@ export function registerSocialRoutes(router) {
     const media = one('SELECT * FROM media WHERE id = ?', Number(params.id));
     if (!media) throw new HttpError(404, 'Media not found.');
     const userId = req.session.user.id;
-    const accessible = media.owner_id === userId || one(`SELECT 1 FROM users WHERE avatar_media_id = ? UNION SELECT 1 FROM post_media WHERE media_id = ?
-      UNION SELECT 1 FROM stories WHERE media_id = ? UNION SELECT 1 FROM messages m JOIN conversation_members cm ON cm.conversation_id = m.conversation_id WHERE m.media_id = ? AND cm.user_id = ? LIMIT 1`, media.id, media.id, media.id, media.id, userId);
+    // Avatars and posts are shared with the whole circle; stories only while they are live (the author
+    // keeps access for their archive); chat media only for members of a conversation that uses it.
+    const accessible = media.owner_id === userId || one(`SELECT 1 FROM users WHERE avatar_media_id = ?
+      UNION SELECT 1 FROM post_media WHERE media_id = ?
+      UNION SELECT 1 FROM stories WHERE media_id = ? AND (expires_at > ? OR author_id = ?)
+      UNION SELECT 1 FROM messages m JOIN conversation_members cm ON cm.conversation_id = m.conversation_id
+        WHERE m.media_id = ? AND m.deleted_at IS NULL AND cm.user_id = ? LIMIT 1`,
+      media.id, media.id, media.id, new Date().toISOString(), userId, media.id, userId);
     if (!accessible) throw new HttpError(403, 'You do not have access to this media.');
     sendMedia(req, res, media);
   });
@@ -72,15 +80,32 @@ export function registerSocialRoutes(router) {
     }
     run('UPDATE users SET display_name = ?, bio = ?, avatar_media_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', displayName, bio, avatarId, req.session.user.id);
     const user = one('SELECT * FROM users WHERE id = ?', req.session.user.id);
-    broadcast('profile:updated', { user: publicUser(user, isOnline(user.id)) });
-    json(res, 200, { user: publicUser(user, true) });
+    broadcast('profile:updated', { user: publicUser(user, isOnline(user.id)) }, null, user.id);
+    json(res, 200, { user: publicUser(user, true, { self: true }) });
+  });
+
+  router.patch('/api/profile/privacy', async (req, res) => {
+    const body = await parseJson(req);
+    if (typeof body.showLastSeen !== 'boolean') throw new HttpError(400, 'Choose whether to show your last seen time.');
+    run('UPDATE users SET show_last_seen = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', body.showLastSeen ? 1 : 0, req.session.user.id);
+    const user = one('SELECT * FROM users WHERE id = ?', req.session.user.id);
+    const online = isOnline(user.id);
+    broadcast('profile:updated', { user: publicUser(user, online) }, null, user.id);
+    // Others must see the change immediately, not on their next reload.
+    broadcast('presence', body.showLastSeen ? { userId: user.id, online, lastSeenAt: iso(user.last_seen_at) } : { userId: user.id, online: false, lastSeenAt: null, hidden: true }, null, user.id);
+    json(res, 200, { user: publicUser(user, true, { self: true }) });
   });
 
   router.get('/api/profiles/:id', (req, res, params) => {
     const user = one('SELECT * FROM users WHERE id = ?', Number(params.id));
     if (!user) throw new HttpError(404, 'Member not found.');
+    const self = user.id === req.session.user.id;
     const posts = all(`SELECT p.*, u.username, u.display_name, u.avatar_media_id FROM posts p JOIN users u ON u.id = p.author_id WHERE p.author_id = ? ORDER BY p.id DESC LIMIT 50`, user.id).map(post => formatPost(post, req.session.user.id));
-    json(res, 200, { user: publicUser(user, isOnline(user.id)), posts });
+    const stats = {
+      posts: Number(one('SELECT COUNT(*) count FROM posts WHERE author_id = ?', user.id).count),
+      activeStories: Number(one('SELECT COUNT(*) count FROM stories WHERE author_id = ? AND expires_at > ?', user.id, new Date().toISOString()).count)
+    };
+    json(res, 200, { user: publicUser(user, isOnline(user.id), { self }), posts, stats });
   });
 
   router.get('/api/feed', (req, res) => {

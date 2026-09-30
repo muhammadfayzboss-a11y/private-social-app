@@ -1,8 +1,8 @@
 import { config } from '../config.js';
 import { all, bootstrapGroupConversation, one, run, transaction } from '../db.js';
-import { clientIp, createSession, getSession, hashPassword, rateLimit, sessionCookie, verifyPassword } from '../auth.js';
+import { clientIp, createSession, dummyPasswordCheck, getSession, hashPassword, rateLimit, sessionCookie, verifyPassword } from '../auth.js';
 import { broadcast, isOnline } from '../realtime.js';
-import { cleanText, HttpError, json, parseJson, publicUser, randomToken, sha256, validateUsername } from '../utils.js';
+import { cleanText, HttpError, iso, json, parseJson, publicUser, randomToken, sha256, validateUsername } from '../utils.js';
 
 function setSession(res, session) {
   res.setHeader('set-cookie', sessionCookie(session.token));
@@ -28,7 +28,7 @@ async function createAccount(body, role = 'member', invite = null) {
 export function registerAuthRoutes(router) {
   router.get('/api/auth/status', (req, res) => {
     const session = getSession(req);
-    json(res, 200, { authenticated: Boolean(session), needsSetup: !one('SELECT id FROM users LIMIT 1'), user: session?.user || null, csrfToken: session?.csrfToken || null });
+    json(res, 200, { authenticated: Boolean(session), needsSetup: !one('SELECT id FROM users LIMIT 1'), user: session?.user || null, csrfToken: session?.csrfToken || null, serverTime: new Date().toISOString() });
   }, { public: true });
 
   router.post('/api/auth/bootstrap', async (req, res) => {
@@ -39,7 +39,7 @@ export function registerAuthRoutes(router) {
     const userRow = await createAccount(body, 'admin');
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
-    json(res, 201, { user: publicUser(userRow, true), csrfToken });
+    json(res, 201, { user: publicUser(userRow, true, { self: true }), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/register', async (req, res) => {
@@ -51,7 +51,7 @@ export function registerAuthRoutes(router) {
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
     broadcast('member:joined', { user: publicUser(userRow, true) }, null, userRow.id);
-    json(res, 201, { user: publicUser(userRow, true), csrfToken });
+    json(res, 201, { user: publicUser(userRow, true, { self: true }), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/login', async (req, res) => {
@@ -62,10 +62,11 @@ export function registerAuthRoutes(router) {
     rateLimit(`login:ip:${clientIp(req)}`, 40, 600000);
     if (username) rateLimit(`login:user:${username}`, 8, 600000);
     const userRow = one('SELECT * FROM users WHERE username = ?', username);
-    if (!userRow || !(await verifyPassword(String(body.password || ''), userRow.password_hash))) throw new HttpError(401, 'Incorrect username or password.');
+    if (!userRow) { await dummyPasswordCheck(body.password); throw new HttpError(401, 'Incorrect username or password.'); }
+    if (!(await verifyPassword(String(body.password || ''), userRow.password_hash))) throw new HttpError(401, 'Incorrect username or password.');
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
-    json(res, 200, { user: publicUser(userRow, true), csrfToken });
+    json(res, 200, { user: publicUser(userRow, true, { self: true }), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/logout', (req, res) => {
@@ -86,10 +87,12 @@ export function registerAuthRoutes(router) {
 
   router.get('/api/invites', (req, res) => {
     if (req.session.user.role !== 'admin') throw new HttpError(403, 'Only the group admin can view invitations.');
-    json(res, 200, { invites: all('SELECT id, label, expires_at expiresAt, claimed_at claimedAt, created_at createdAt FROM invites ORDER BY id DESC') });
+    json(res, 200, { invites: all('SELECT id, label, expires_at, claimed_at, created_at FROM invites ORDER BY id DESC')
+      .map(invite => ({ id: invite.id, label: invite.label, expiresAt: iso(invite.expires_at), claimedAt: iso(invite.claimed_at), createdAt: iso(invite.created_at) })) });
   });
 
   router.get('/api/members', (req, res) => {
-    json(res, 200, { members: all('SELECT * FROM users ORDER BY display_name').map(user => publicUser(user, isOnline(user.id))) });
+    const viewerId = req.session.user.id;
+    json(res, 200, { members: all('SELECT * FROM users ORDER BY display_name').map(user => publicUser(user, isOnline(user.id), { self: user.id === viewerId })) });
   });
 }

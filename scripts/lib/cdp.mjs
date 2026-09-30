@@ -50,6 +50,8 @@ export async function launchChrome({ debugPort, profileDir, binary = process.env
   const chrome = spawn(binary, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run',
     '--hide-scrollbars', '--mute-audio', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profileDir}`,
+    // A synthetic microphone lets the checks record and send real voice messages.
+    '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required',
     'about:blank'
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
   await waitForHttp(`http://127.0.0.1:${debugPort}/json/version`);

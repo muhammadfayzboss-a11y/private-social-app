@@ -1,7 +1,9 @@
 import { nowIso } from './utils.js';
-import { run } from './db.js';
+import { one, run } from './db.js';
 
 const clients = new Map();
+let sequence = 0;
+
 const heartbeat = setInterval(() => {
   for (const connections of clients.values()) for (const res of connections) res.write(`: heartbeat ${Date.now()}\n\n`);
 }, 25000);
@@ -9,6 +11,10 @@ heartbeat.unref();
 
 export function isOnline(userId) { return Boolean(clients.get(Number(userId))?.size); }
 export function onlineUserIds() { return [...clients.keys()].filter(isOnline); }
+
+function hidesPresence(userId) {
+  return Number(one('SELECT show_last_seen FROM users WHERE id = ?', userId)?.show_last_seen ?? 1) === 0;
+}
 
 export function connect(userId, req, res) {
   userId = Number(userId);
@@ -18,26 +24,34 @@ export function connect(userId, req, res) {
     connection: 'keep-alive',
     'x-accel-buffering': 'no'
   });
-  res.write(`event: connected\ndata: ${JSON.stringify({ userId, at: nowIso() })}\n\n`);
+  // `retry` tells EventSource how quickly to reconnect; serverTime lets the client correct clock skew
+  // so relative timestamps ("5m") are computed against the server's clock, not a drifting phone clock.
+  res.write(`retry: 3000\nevent: connected\ndata: ${JSON.stringify({ userId, at: nowIso(), serverTime: nowIso() })}\n\n`);
   const firstConnection = !clients.has(userId);
   if (!clients.has(userId)) clients.set(userId, new Set());
   clients.get(userId).add(res);
-  if (firstConnection) broadcast('presence', { userId, online: true }, null, userId);
-  req.on('close', () => {
+  if (firstConnection && !hidesPresence(userId)) broadcast('presence', { userId, online: true }, null, userId);
+  const close = () => {
     const connections = clients.get(userId);
-    connections?.delete(res);
-    if (!connections?.size) {
+    if (!connections?.has(res)) return;
+    connections.delete(res);
+    if (!connections.size) {
       clients.delete(userId);
-      run('UPDATE users SET last_seen_at = ? WHERE id = ?', nowIso(), userId);
-      broadcast('presence', { userId, online: false, lastSeenAt: nowIso() }, null, userId);
+      const at = nowIso();
+      run('UPDATE users SET last_seen_at = ? WHERE id = ?', at, userId);
+      if (!hidesPresence(userId)) broadcast('presence', { userId, online: false, lastSeenAt: at }, null, userId);
     }
-  });
+  };
+  req.on('close', close);
+  res.on('error', close);
 }
 
+/** Every frame carries a monotonically increasing id so clients can discard exact replays. */
 export function send(userId, event, data) {
-  for (const res of clients.get(Number(userId)) || []) {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  }
+  const connections = clients.get(Number(userId));
+  if (!connections?.size) return;
+  const frame = `id: ${++sequence}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of connections) res.write(frame);
 }
 
 export function sendMany(userIds, event, data) {
@@ -45,5 +59,5 @@ export function sendMany(userIds, event, data) {
 }
 
 export function broadcast(event, data, onlyIds = null, exceptId = null) {
-  for (const id of onlyIds || clients.keys()) if (id !== Number(exceptId)) send(id, event, data);
+  for (const id of onlyIds || [...clients.keys()]) if (id !== Number(exceptId)) send(id, event, data);
 }

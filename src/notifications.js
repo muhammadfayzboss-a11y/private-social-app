@@ -1,6 +1,7 @@
 import { all, one, run } from './db.js';
 import { isOnline, send } from './realtime.js';
 import { sendPushToUser } from './webpush.js';
+import { iso } from './utils.js';
 
 const SUMMARIES = {
   post_reaction: 'reacted to your post',
@@ -40,10 +41,31 @@ export function notify(userId, actorId, kind, entityType, entityId, message = ''
   return formatted;
 }
 
+const MESSAGE_PREVIEWS = { voice: '🎤 Voice message', image: '📷 Photo', video: '🎬 Video', sticker: 'Sticker', story_reply: 'Replied to your story' };
+
+/**
+ * Chat messages already have their own unread counters, so they are not written to the Activity
+ * feed (that used to bury real activity under "sent you a message"). Members who are offline still
+ * get one push per message unless they muted the conversation. The tag collapses a burst from one
+ * chat into a single notification on the lock screen.
+ */
+export function notifyMessage(recipientId, sender, conversationId, message) {
+  if (!recipientId || Number(recipientId) === Number(sender.id) || isOnline(recipientId)) return;
+  const muted = one('SELECT muted FROM conversation_members WHERE conversation_id = ? AND user_id = ?', conversationId, recipientId)?.muted;
+  if (Number(muted)) return;
+  const preview = message.kind === 'text' || message.kind === 'story_reply' ? String(message.body || '').slice(0, 120) : MESSAGE_PREVIEWS[message.kind] || 'New message';
+  sendPushToUser(recipientId, {
+    title: sender.displayName || 'Circle',
+    body: preview || 'New message',
+    url: `/chat/${conversationId}`,
+    tag: `conversation-${conversationId}`
+  }).catch(error => console.error('Push notification failed:', error.message));
+}
+
 export function formatNotification(row) {
   return {
     id: row.id, kind: row.kind, entityType: row.entity_type, entityId: row.entity_id,
-    message: row.message, readAt: row.read_at, createdAt: row.created_at,
+    message: row.message, readAt: iso(row.read_at), createdAt: iso(row.created_at),
     actor: row.actor_id ? { id: row.actor_id, username: row.actor_username, displayName: row.actor_display_name,
       avatarUrl: row.actor_avatar_id ? `/api/media/${row.actor_avatar_id}` : null } : null
   };

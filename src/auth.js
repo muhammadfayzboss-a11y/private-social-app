@@ -15,6 +15,11 @@ export async function hashPassword(password) {
   return `scrypt$${salt}$${Buffer.from(derived).toString('hex')}`;
 }
 
+// Verifying against a throwaway hash when the username does not exist keeps response times the
+// same either way, so login timing cannot be used to discover which usernames are members.
+const DUMMY_HASH = `scrypt$${crypto.randomBytes(16).toString('hex')}$${'0'.repeat(128)}`;
+export function dummyPasswordCheck(password) { return verifyPassword(String(password || ''), DUMMY_HASH); }
+
 export async function verifyPassword(password, stored) {
   try {
     const [scheme, salt, expected] = stored.split('$');
@@ -40,10 +45,10 @@ export function createSession(userId, req) {
 export function getSession(req) {
   const token = parseCookies(req.headers.cookie).circle_session;
   if (!token) return null;
-  const session = one(`SELECT s.*, u.username, u.display_name, u.bio, u.role, u.avatar_media_id, u.last_seen_at, u.created_at
+  const session = one(`SELECT s.*, u.username, u.display_name, u.bio, u.role, u.avatar_media_id, u.last_seen_at, u.show_last_seen, u.created_at
     FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?`, sha256(token), new Date().toISOString());
   if (!session) return null;
-  return { id: session.id, csrfToken: session.csrf_token, user: publicUser({ ...session, id: session.user_id }) };
+  return { id: session.id, csrfToken: session.csrf_token, user: publicUser({ ...session, id: session.user_id }, true, { self: true }) };
 }
 
 export function requireAuth(req) {

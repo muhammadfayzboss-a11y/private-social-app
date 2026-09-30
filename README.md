@@ -118,6 +118,7 @@ PNG, WebP, GIF, and SVG are supported. After adding files, use **Profile → Set
 | `STICKER_DIR` | no | `./stickers` | Sticker pack directory. |
 | `SESSION_DAYS` | no | `30` | Session lifetime. |
 | `MAX_UPLOAD_MB` | no | `25` | Per-file upload limit. |
+| `STORY_ARCHIVE_DAYS` | no | `30` | How long authors can still see their own expired stories and viewers in *Profile → Your stories*. Others lose access the moment a story expires. |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | no | — | Enables Web Push. |
 
 Secrets live only on the server; the browser never receives anything beyond the VAPID *public* key.
@@ -128,9 +129,9 @@ Secrets live only on the server; the browser never receives anything beyond the 
 | --- | --- |
 | `npm start` | Run the app. |
 | `npm run dev` | Run with auto-reload. |
-| `npm test` | 38 API, security, realtime, push, and configuration tests. |
-| `npm run verify:browser` | 27 end-to-end checks in headless Chrome with screenshots. |
-| `npm run verify:deploy` | 21 deployment checks: production config, headers, cookies, PWA installability, offline shell, phone layouts. |
+| `npm test` | 52 API, security, realtime, chat-reliability, push, and configuration tests. |
+| `npm run verify:browser` | 32 end-to-end checks in headless Chrome (real voice recording via a fake microphone) with screenshots. |
+| `npm run verify:deploy` | 22 deployment checks: production config, headers, cookies, PWA installability, offline shell, phone layouts. |
 | `npm run verify` | All three suites. |
 | `npm run vapid` | Generate push keys. |
 | `npm run icons` | Regenerate app icons from code. |

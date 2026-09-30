@@ -22,6 +22,32 @@ export function transaction(fn) {
   catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
+/**
+ * Additive migrations for databases created by earlier versions. `schema.sql` only uses
+ * CREATE ... IF NOT EXISTS, so new columns on existing tables must be added here, and any
+ * index over a new column must be created after that column exists.
+ */
+function migrate() {
+  const columns = table => new Set(all(`PRAGMA table_info(${table})`).map(column => column.name));
+  const addColumn = (table, name, definition) => {
+    if (!columns(table).has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  };
+  addColumn('messages', 'client_id', 'TEXT');
+  addColumn('messages', 'forwarded_from_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  addColumn('media', 'waveform', 'TEXT');
+  addColumn('conversations', 'pinned_message_id', 'INTEGER REFERENCES messages(id) ON DELETE SET NULL');
+  addColumn('conversation_members', 'pinned_at', 'TEXT');
+  addColumn('conversation_members', 'muted', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('users', 'show_last_seen', 'INTEGER NOT NULL DEFAULT 1');
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client ON messages(sender_id, client_id) WHERE client_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(media_id) WHERE media_id IS NOT NULL;
+  `);
+}
+
+migrate();
+
 export function bootstrapGroupConversation() {
   let conversation = one("SELECT * FROM conversations WHERE kind = 'group' ORDER BY id LIMIT 1");
   if (!conversation) {

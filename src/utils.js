@@ -9,6 +9,23 @@ export class HttpError extends Error {
 }
 
 export const nowIso = () => new Date().toISOString();
+
+/**
+ * SQLite's CURRENT_TIMESTAMP stores UTC as "YYYY-MM-DD HH:MM:SS" with no zone marker. Browsers parse
+ * that shape as *local* time (or reject it), which shifted every "time ago" by the viewer's UTC
+ * offset. Every timestamp leaves the API as an unambiguous ISO-8601 UTC string instead.
+ */
+export function iso(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(text)) return `${text.replace(' ', 'T')}Z`;
+  return text;
+}
+
+/** decodeURIComponent that never throws on malformed input (a bad header must not become a 500). */
+export function safeDecode(value) {
+  try { return decodeURIComponent(value); } catch { return String(value); }
+}
 export const addDays = (date, days) => new Date(date.getTime() + days * 86400000).toISOString();
 export const randomToken = (bytes = 32) => crypto.randomBytes(bytes).toString('base64url');
 export const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
@@ -31,7 +48,10 @@ export function cleanText(value, max, field = 'Text') {
 }
 
 export function parseCookies(header = '') {
-  return Object.fromEntries(header.split(';').map(part => part.trim().split('=').map(decodeURIComponent)).filter(pair => pair.length === 2));
+  return Object.fromEntries(header.split(';').map(part => {
+    const index = part.indexOf('=');
+    return index < 1 ? [] : [part.slice(0, index).trim(), safeDecode(part.slice(index + 1).trim())];
+  }).filter(pair => pair.length === 2));
 }
 
 export function json(res, status, body, headers = {}) {
@@ -57,19 +77,28 @@ export function parseJson(req, maxBytes = 1_000_000) {
   });
 }
 
-export function publicUser(row, online = false) {
+/**
+ * Members who turned off "Show last seen" appear to everyone else without an online indicator or a
+ * last-seen time. `self` is used only for the member's own record, which always carries the truth
+ * plus their privacy settings.
+ */
+export function publicUser(row, online = false, { self = false } = {}) {
   if (!row) return null;
-  return {
+  const hidesPresence = Number(row.show_last_seen ?? 1) === 0;
+  const user = {
     id: row.id,
     username: row.username,
     displayName: row.display_name,
     bio: row.bio,
     role: row.role,
     avatarUrl: row.avatar_media_id ? `/api/media/${row.avatar_media_id}` : null,
-    online,
-    lastSeenAt: row.last_seen_at,
-    createdAt: row.created_at
+    online: self ? Boolean(online) : (hidesPresence ? false : Boolean(online)),
+    lastSeenAt: self || !hidesPresence ? iso(row.last_seen_at) : null,
+    presenceHidden: !self && hidesPresence,
+    createdAt: iso(row.created_at)
   };
+  if (self) user.privacy = { showLastSeen: !hidesPresence };
+  return user;
 }
 
 export function parseRoute(pattern, pathname) {
@@ -77,5 +106,5 @@ export function parseRoute(pattern, pathname) {
   const regex = new RegExp(`^${pattern.replace(/:([A-Za-z]+)/g, (_, name) => { names.push(name); return '([^/]+)'; })}$`);
   const match = pathname.match(regex);
   if (!match) return null;
-  return Object.fromEntries(names.map((name, index) => [name, decodeURIComponent(match[index + 1])]));
+  return Object.fromEntries(names.map((name, index) => [name, safeDecode(match[index + 1])]));
 }
