@@ -998,20 +998,17 @@ export function renderConversation(host, { conversationId }, screen) {
   }, true);
   list.addEventListener('loadedmetadata', () => { if (stickToBottom) scrollToBottom(); }, true);
 
-  // Keep the composer glued above the on-screen keyboard (iOS resizes only the visual viewport).
+  // The app shell owns visual-viewport sizing globally. This local hook only remembers keyboard
+  // height for the emoji panel and keeps the latest message anchored while that viewport changes.
   const viewport = window.visualViewport;
   const fitViewport = () => {
     if (!viewport || !active) return;
     const keepBottom = stickToBottom;
-    const keyboard = window.innerHeight - viewport.height;
+    const keyboard = Math.max(0, window.innerHeight - viewport.height);
     if (keyboard > 150 && document.activeElement === input) {
       keyboardHeight = keyboard;
       try { localStorage.setItem('circle-keyboard-height', String(Math.round(keyboard))); } catch { /* ignore */ }
     }
-    const height = Math.min(viewport.height, window.innerHeight);
-    const offset = Math.min(viewport.offsetTop || 0, Math.max(0, window.innerHeight - height));
-    page.style.setProperty('height', `${height}px`, 'important');
-    page.style.transform = offset ? `translateY(${offset}px)` : '';
     if (keepBottom) scrollToBottom();
   };
   if (viewport) {

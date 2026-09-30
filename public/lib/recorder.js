@@ -8,6 +8,7 @@
  */
 const PREFERRED_TYPES = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
 const WAVEFORM_BARS = 48;
+const STOP_TIMEOUT_MS = 4000;
 export const MAX_RECORDING_MS = 10 * 60 * 1000;
 
 export function recordingSupported() {
@@ -45,9 +46,12 @@ export class VoiceRecorder {
       if (this.state !== 'starting') { this.#releaseStream(); return false; } // cancelled while the prompt was open
       const mimeType = pickType();
       this.recorder = new MediaRecorder(this.stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 48000 });
-      this.chunks = [];
+      const chunks = [];
+      this.chunks = chunks;
       this.levels = [];
-      this.recorder.addEventListener('dataavailable', event => { if (event.data?.size) this.chunks.push(event.data); });
+      // Capture this recording's chunk array. A late dataavailable event from a cancelled native
+      // recorder must never append bytes to a newer recording.
+      this.recorder.addEventListener('dataavailable', event => { if (event.data?.size) chunks.push(event.data); });
       this.#startMeter();
       this.recorder.start(250);
       this.startedAt = performance.now();
@@ -64,31 +68,72 @@ export class VoiceRecorder {
 
   elapsed() { return this.state === 'recording' ? performance.now() - this.startedAt : 0; }
 
-  /** Stops and resolves with the recording, or null if it was too short to be meaningful. */
+  /** Stops and resolves with the recording, or null if it was too short or was discarded. */
   stop() {
     if (this.state !== 'recording') return Promise.resolve(null);
     this.state = 'stopping';
+    const recorder = this.recorder;
+    const chunks = this.chunks;
+    const levels = this.levels;
     const durationMs = Math.round(performance.now() - this.startedAt);
-    return new Promise(resolve => {
-      this.recorder.addEventListener('stop', () => {
-        const type = (this.recorder.mimeType || this.chunks[0]?.type || 'audio/webm').split(';')[0];
-        const blob = new Blob(this.chunks, { type });
-        const waveform = summariseWaveform(this.levels);
-        this.#cleanup();
-        this.state = 'idle';
-        resolve(durationMs < 600 || blob.size < 500 ? null : { blob, type, durationMs, waveform });
-      }, { once: true });
-      try { this.recorder.requestData?.(); } catch { /* not all browsers allow it here */ }
-      this.recorder.stop();
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let watchdog = null;
+
+      const finish = ({ error = null, discarded = false } = {}) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        recorder.removeEventListener('stop', onStop);
+        recorder.removeEventListener('error', onError);
+
+        let result = null;
+        if (!error && !discarded) {
+          const type = (recorder.mimeType || chunks[0]?.type || 'audio/webm').split(';')[0];
+          const blob = new Blob(chunks, { type });
+          const waveform = summariseWaveform(levels);
+          if (durationMs >= 600 && blob.size >= 500) result = { blob, type, durationMs, waveform };
+        }
+
+        // A stop can complete after WebKit has interrupted the track. Always release hardware and
+        // return to idle exactly once; otherwise the composer has no usable Send or Cancel action.
+        if (this.recorder === recorder) {
+          this.#cleanup();
+          this.recorder = null;
+          this.chunks = [];
+          this.stopSettlement = null;
+          this.state = 'idle';
+        }
+        if (error) reject(error); else resolve(result);
+      };
+      const onStop = () => finish();
+      const onError = event => finish({ error: event.error || new Error('The recording could not be finished.') });
+
+      this.stopSettlement = { cancel: () => finish({ discarded: true }) };
+      recorder.addEventListener('stop', onStop, { once: true });
+      recorder.addEventListener('error', onError, { once: true });
+      watchdog = setTimeout(() => finish({ error: new Error('The recording did not finish in time.') }), STOP_TIMEOUT_MS);
+
+      try {
+        // Safari can leave a recorder inactive without dispatching its final stop event.
+        if (recorder.state === 'inactive') queueMicrotask(onStop);
+        else recorder.stop();
+      } catch (error) { finish({ error }); }
     });
   }
 
   cancel() {
     if (this.state === 'starting') { this.state = 'idle'; return; }
+    if (this.state === 'stopping') { this.stopSettlement?.cancel(); return; }
     if (this.state !== 'recording') return;
-    this.state = 'stopping';
-    this.recorder.addEventListener('stop', () => { this.#cleanup(); this.state = 'idle'; }, { once: true });
-    this.recorder.stop();
+    const recorder = this.recorder;
+    this.state = 'idle';
+    try { if (recorder?.state !== 'inactive') recorder?.stop(); } catch { /* interrupted recorders may already be stopped */ }
+    this.#cleanup();
+    this.recorder = null;
+    this.chunks = [];
+    this.stopSettlement = null;
   }
 
   #startMeter() {

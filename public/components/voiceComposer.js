@@ -32,6 +32,7 @@ export function createVoiceComposer({ micButton, wrap, onSend, onRecordingChange
   let recording = null;
   let previewUrl = null;
   let unbindPreview = null;
+  let transition = 0;
 
   const bar = document.createElement('div');
   bar.className = 'recording-bar';
@@ -61,6 +62,7 @@ export function createVoiceComposer({ micButton, wrap, onSend, onRecordingChange
     phase = next;
     wrap.dataset.recording = next;
     bar.hidden = next === 'idle';
+    bar.toggleAttribute('aria-busy', next === 'starting' || next === 'sending');
     onRecordingChange?.(next !== 'idle');
   };
 
@@ -106,21 +108,39 @@ export function createVoiceComposer({ micButton, wrap, onSend, onRecordingChange
     toast(settings().chat.sendByHold ? t('Hold to record, release to send') : t('Tap the microphone to start recording'));
   }
 
-  async function finish(mode) {
-    if (!['holding', 'locked'].includes(phase)) return;
-    if (mode === 'cancel') {
-      recorder.cancel();
-      bar.classList.add('cancelled');
-      navigator.vibrate?.([8, 40, 8]);
-      setTimeout(() => bar.classList.remove('cancelled'), 300);
-      return reset();
-    }
-    setPhase('sending');
-    const result = await recorder.stop();
-    if (!result) { reset(); return toast(t('Recording was too short — hold on a little longer.')); }
-    if (mode === 'preview') return showPreview(result);
+  function cancelRecording() {
+    transition += 1; // Ignore a late native stop/error callback from the discarded recording.
+    recorder.cancel();
+    bar.classList.add('cancelled');
+    navigator.vibrate?.([8, 40, 8]);
+    setTimeout(() => bar.classList.remove('cancelled'), 300);
     reset();
-    onSend(result);
+  }
+
+  async function finish(mode) {
+    if (mode === 'cancel') {
+      if (!['starting', 'holding', 'locked', 'sending'].includes(phase)) return;
+      return cancelRecording();
+    }
+    if (!['holding', 'locked'].includes(phase)) return;
+
+    const currentTransition = ++transition;
+    clearInterval(timer);
+    timer = null;
+    setPhase('sending');
+    try {
+      const result = await recorder.stop();
+      if (currentTransition !== transition) return;
+      if (!result) { reset(); return toast(t('Recording was too short — hold on a little longer.')); }
+      if (mode === 'preview') return showPreview(result);
+      reset();
+      onSend(result);
+    } catch (error) {
+      if (currentTransition !== transition) return;
+      console.error('Could not finish voice recording', error);
+      reset();
+      toast(t('Could not finish recording. Please try again.'), 'error');
+    }
   }
 
   function showPreview(result) {
@@ -184,8 +204,11 @@ export function createVoiceComposer({ micButton, wrap, onSend, onRecordingChange
 
   return {
     get active() { return phase !== 'idle'; },
-    cancel() { if (phase === 'holding' || phase === 'locked') finish('cancel'); else if (phase === 'preview') reset(); else if (phase === 'starting') { releasedEarly = true; } },
-    destroy() { if (phase !== 'idle') { recorder.cancel(); reset(); } bar.remove(); }
+    cancel() {
+      if (phase === 'preview') { transition += 1; reset(); }
+      else if (phase !== 'idle') finish('cancel');
+    },
+    destroy() { if (phase !== 'idle') { transition += 1; recorder.cancel(); reset(); } bar.remove(); }
   };
 }
 

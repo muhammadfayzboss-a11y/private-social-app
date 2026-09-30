@@ -97,6 +97,12 @@ try {
     return info.names.join(', ');
   });
 
+  await check('mobile shell and tab bar reach the visual viewport bottom', async () => {
+    const layout = await evaluate(pageA, `const a=document.querySelector('#app').getBoundingClientRect();const s=document.querySelector('.app-shell').getBoundingClientRect();const t=document.querySelector('.tabbar').getBoundingClientRect();const visualBottom=Math.round((visualViewport?.offsetTop||0)+(visualViewport?.height||innerHeight));return {appBottom:Math.round(a.bottom),shellBottom:Math.round(s.bottom),tabbarBottom:Math.round(t.bottom),visualBottom};`);
+    if (Math.max(Math.abs(layout.appBottom-layout.visualBottom), Math.abs(layout.shellBottom-layout.visualBottom), Math.abs(layout.tabbarBottom-layout.visualBottom)) > 1) throw new Error(JSON.stringify(layout));
+    return JSON.stringify(layout);
+  });
+
   await check('root screen has stories, folders, and compose FAB', async () => {
     await waitFor(pageA, "document.querySelector('.stories-row') && document.querySelector('.folder-tabs') && document.querySelector('.fab')");
     const labels = await evaluate(pageA, "return [...document.querySelectorAll('.folder-tab')].map(x=>x.textContent.trim()).join(' / ');");
@@ -292,6 +298,35 @@ try {
     return `1 message, ${voice.media.durationMs}ms, ${voice.media.waveform.length} bars`;
   });
 
+  await check('an interrupted voice recorder always exposes a working cancel action', async () => {
+    let mocked = false;
+    try {
+      mocked = await evaluate(pageA, `
+        window.__circleRealMediaRecorder = window.MediaRecorder;
+        class StalledMediaRecorder extends EventTarget {
+          static isTypeSupported(){return true}
+          constructor(stream,options={}){super();this.stream=stream;this.mimeType=options.mimeType||'audio/webm';this.state='inactive'}
+          start(){this.state='recording'}
+          stop(){this.state='inactive'}
+        }
+        window.MediaRecorder=StalledMediaRecorder;
+        return window.MediaRecorder===StalledMediaRecorder;`);
+      if (!mocked) throw new Error('could not install interrupted recorder');
+      await evaluate(pageA, `const b=document.querySelector('.chat-voice');b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:17,pointerType:'touch',clientX:370,clientY:800}));return true;`);
+      await waitFor(pageA, "document.querySelector('[data-composer-wrap]').dataset.recording === 'holding'", { timeout: 7000, label: 'interrupted voice recording' });
+      await sleep(700);
+      await evaluate(pageA, `const b=document.querySelector('.chat-voice');b.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:17,pointerType:'touch',clientX:370,clientY:800}));return true;`);
+      await waitFor(pageA, "document.querySelector('[data-composer-wrap]').dataset.recording === 'sending'", { label: 'voice stopping state' });
+      const actionable = await evaluate(pageA, `const b=document.querySelector('.recording-bar [data-action="cancel-recording"]');const r=b?.getBoundingClientRect();return Boolean(b&&getComputedStyle(b).display!=='none'&&r.width>=44&&r.height>=44);`);
+      if (!actionable) throw new Error('sending state has no reachable cancel action');
+      await click(pageA, '.recording-bar [data-action="cancel-recording"]');
+      await waitFor(pageA, "document.querySelector('[data-composer-wrap]').dataset.recording === 'idle' && document.querySelector('.recording-bar').hidden", { label: 'voice cancel recovery' });
+      return 'cancel remains available while WebKit stop is stalled';
+    } finally {
+      if (mocked) await evaluate(pageA, `window.MediaRecorder=window.__circleRealMediaRecorder;delete window.__circleRealMediaRecorder;return true;`).catch(() => {});
+    }
+  });
+
   await check('only one voice player can be active and speed cycles', async () => {
     // Send a second recorded voice.
     await evaluate(pageA, `const b=document.querySelector('.chat-voice');b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:8,pointerType:'touch',clientX:370,clientY:800}));return true;`);
@@ -399,9 +434,9 @@ try {
   await check('keyboard-size viewport keeps composer reachable', async () => {
     await evaluate(pageB,"history.replaceState({depth:0},'', '/');dispatchEvent(new PopStateEvent('popstate'));return true;");await waitFor(pageB,"document.querySelector('[data-open]')");await click(pageB,'[data-open]');await waitFor(pageB,"document.querySelector('.chat-composer')");
     await pageB.send('Emulation.setDeviceMetricsOverride',{...DEVICES['iPhone SE'],height:330});await sleep(300);
-    const layout=await evaluate(pageB,"const c=document.querySelector('.composer-wrap').getBoundingClientRect();const m=document.querySelector('.messages').getBoundingClientRect();return {bottom:Math.round(c.bottom),viewport:innerHeight,messages:Math.round(m.height)};");
+    const layout=await evaluate(pageB,"const c=document.querySelector('.composer-wrap').getBoundingClientRect();const m=document.querySelector('.messages').getBoundingClientRect();const a=document.querySelector('#app').getBoundingClientRect();const s=document.querySelector('.app-shell').getBoundingClientRect();const visualBottom=Math.round((visualViewport?.offsetTop||0)+(visualViewport?.height||innerHeight));return {composerBottom:Math.round(c.bottom),appBottom:Math.round(a.bottom),shellBottom:Math.round(s.bottom),visualBottom,messages:Math.round(m.height)};");
     await useDevice(pageB,DEVICES['iPhone 15 Pro']);
-    if(layout.bottom>layout.viewport+1||layout.messages<40)throw new Error(JSON.stringify(layout));
+    if(Math.max(Math.abs(layout.composerBottom-layout.visualBottom),Math.abs(layout.appBottom-layout.visualBottom),Math.abs(layout.shellBottom-layout.visualBottom))>1||layout.messages<40)throw new Error(JSON.stringify(layout));
     return JSON.stringify(layout);
   });
 

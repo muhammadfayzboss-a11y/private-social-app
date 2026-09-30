@@ -17,6 +17,36 @@ const splash = document.querySelector('#splash');
 let shell = null;
 let sessionStarted = false;
 
+/*
+ * iOS can report different percentage, dynamic, and visual viewport heights after standalone
+ * launch, rotation, keyboard use, or returning from the background. Keep the complete app shell
+ * on one measured viewport so the tab bar always paints through the bottom safe area.
+ */
+let viewportFrame = 0;
+let viewportSettleTimer = null;
+function applyAppViewport() {
+  viewportFrame = 0;
+  const viewport = window.visualViewport;
+  const height = Math.max(1, Math.round(viewport?.height || window.innerHeight));
+  const maxOffset = Math.max(0, window.innerHeight - height);
+  const offsetTop = Math.max(0, Math.min(Math.round(viewport?.offsetTop || 0), maxOffset));
+  document.documentElement.style.setProperty('--app-height', `${height}px`);
+  document.documentElement.style.setProperty('--app-offset-top', `${offsetTop}px`);
+}
+function scheduleAppViewport() {
+  cancelAnimationFrame(viewportFrame);
+  clearTimeout(viewportSettleTimer);
+  viewportFrame = requestAnimationFrame(applyAppViewport);
+  // WebKit sometimes settles its final standalone/rotation metrics one frame later.
+  viewportSettleTimer = setTimeout(applyAppViewport, 120);
+}
+applyAppViewport();
+window.visualViewport?.addEventListener('resize', scheduleAppViewport);
+window.visualViewport?.addEventListener('scroll', scheduleAppViewport);
+window.addEventListener('resize', scheduleAppViewport);
+window.addEventListener('orientationchange', scheduleAppViewport);
+window.addEventListener('pageshow', scheduleAppViewport);
+
 const TABS = [
   { tab: 'chats', path: '/', label: 'Chats', iconName: 'chat' },
   { tab: 'feed', path: '/feed', label: 'Feed', iconName: 'grid' },
