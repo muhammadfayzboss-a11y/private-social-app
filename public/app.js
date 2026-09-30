@@ -16,7 +16,7 @@ const app = document.querySelector('#app');
 const splash = document.querySelector('#splash');
 let shell = null;
 let sessionStarted = false;
-const BUILD_VERSION = '6';
+const BUILD_VERSION = '7';
 
 /*
  * iOS can report different percentage, dynamic, and visual viewport heights after standalone
@@ -25,19 +25,28 @@ const BUILD_VERSION = '6';
  */
 let viewportFrame = 0;
 let viewportSettleTimer = null;
+/**
+ * The shell fills the layout viewport through plain CSS (`#app { inset: 0 }`), which cannot leave a
+ * gap. JS only intervenes while an on-screen keyboard is covering part of that viewport, so a wrong
+ * or missing measurement can never shrink the app away from the bottom of the screen.
+ */
 function applyAppViewport() {
   viewportFrame = 0;
   const viewport = window.visualViewport;
   const visualHeight = Math.max(1, Math.round(viewport?.height || window.innerHeight));
   const visualOffset = Math.max(0, Math.round(viewport?.offsetTop || 0));
-  // A keyboard creates a large gap between the layout and visual viewports. A normal iPhone
-  // safe-area/browser inset is small and must stay inside the app so the tab bar paints through it.
+  // A keyboard hides a large slice of the layout viewport. Small differences are browser chrome or
+  // the home-indicator safe area, which must stay inside the app so the tab bar paints through them.
   const keyboardOpen = window.innerHeight - visualHeight - visualOffset > 120;
-  const height = keyboardOpen ? visualHeight : Math.max(1, window.innerHeight);
-  const maxOffset = Math.max(0, window.innerHeight - height);
-  const offsetTop = keyboardOpen ? Math.min(visualOffset, maxOffset) : 0;
-  document.documentElement.style.setProperty('--app-height', `${height}px`);
-  document.documentElement.style.setProperty('--app-offset-top', `${offsetTop}px`);
+  document.documentElement.classList.toggle('keyboard-open', keyboardOpen);
+  if (!keyboardOpen) {
+    document.documentElement.style.removeProperty('--app-height');
+    document.documentElement.style.removeProperty('--app-offset-top');
+    return;
+  }
+  const maxOffset = Math.max(0, window.innerHeight - visualHeight);
+  document.documentElement.style.setProperty('--app-height', `${visualHeight}px`);
+  document.documentElement.style.setProperty('--app-offset-top', `${Math.min(visualOffset, maxOffset)}px`);
 }
 function scheduleAppViewport() {
   cancelAnimationFrame(viewportFrame);

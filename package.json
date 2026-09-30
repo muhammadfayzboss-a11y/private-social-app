@@ -1,6 +1,6 @@
 {
   "name": "circle-private-social",
-  "version": "3.0.0",
+  "version": "3.0.2",
   "private": true,
   "type": "module",
   "description": "A private, invite-only social PWA for close friends: feed, stories, real-time chat, and custom stickers.",
