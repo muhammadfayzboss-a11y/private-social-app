@@ -16,6 +16,7 @@ const app = document.querySelector('#app');
 const splash = document.querySelector('#splash');
 let shell = null;
 let sessionStarted = false;
+const BUILD_VERSION = '6';
 
 /*
  * iOS can report different percentage, dynamic, and visual viewport heights after standalone
@@ -27,9 +28,14 @@ let viewportSettleTimer = null;
 function applyAppViewport() {
   viewportFrame = 0;
   const viewport = window.visualViewport;
-  const height = Math.max(1, Math.round(viewport?.height || window.innerHeight));
+  const visualHeight = Math.max(1, Math.round(viewport?.height || window.innerHeight));
+  const visualOffset = Math.max(0, Math.round(viewport?.offsetTop || 0));
+  // A keyboard creates a large gap between the layout and visual viewports. A normal iPhone
+  // safe-area/browser inset is small and must stay inside the app so the tab bar paints through it.
+  const keyboardOpen = window.innerHeight - visualHeight - visualOffset > 120;
+  const height = keyboardOpen ? visualHeight : Math.max(1, window.innerHeight);
   const maxOffset = Math.max(0, window.innerHeight - height);
-  const offsetTop = Math.max(0, Math.min(Math.round(viewport?.offsetTop || 0), maxOffset));
+  const offsetTop = keyboardOpen ? Math.min(visualOffset, maxOffset) : 0;
   document.documentElement.style.setProperty('--app-height', `${height}px`);
   document.documentElement.style.setProperty('--app-offset-top', `${offsetTop}px`);
 }
@@ -64,7 +70,7 @@ function lazy(modulePath, exportName) {
     let cancelled = false;
     let cleanup = null;
     element.innerHTML = '<div class="screen-loader"><span class="spinner"></span></div>';
-    import(modulePath).then(module => {
+    import(`${modulePath}?v=${BUILD_VERSION}`).then(module => {
       if (cancelled) return;
       element.innerHTML = '';
       cleanup = module[exportName](element, params, screen) || null;
@@ -225,11 +231,19 @@ function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   // Only an update replacing an existing worker is news; the first install is silent.
   const hadController = Boolean(navigator.serviceWorker.controller);
-  navigator.serviceWorker.register('/sw.js').then(registration => {
+  let reloadingForUpdate = false;
+  if (hadController) {
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloadingForUpdate) return;
+      reloadingForUpdate = true;
+      window.location.reload();
+    }, { once: true });
+  }
+  navigator.serviceWorker.register(`/sw.js?v=${BUILD_VERSION}`, { updateViaCache: 'none' }).then(registration => {
     registration.addEventListener('updatefound', () => {
       const worker = registration.installing;
       worker?.addEventListener('statechange', () => {
-        if (worker.state === 'activated' && hadController) toast(t('Circle was updated — changes apply next time you open it.'));
+        if (worker.state === 'activated' && hadController) toast(t('Circle was updated — reloading…'));
       });
     });
   }).catch(error => console.warn('Service worker registration failed', error));
