@@ -11,7 +11,7 @@
  */
 import { icon } from '../icons.js';
 import { formatDuration } from '../lib/time.js';
-import { MAX_RECORDING_MS, recordingSupported, VoiceRecorder } from '../lib/recorder.js?v=6';
+import { MAX_RECORDING_MS, recordingSupported, VoiceRecorder } from '../lib/recorder.js?v=7';
 import { stopAll, toggle as togglePlayback } from '../lib/audio.js';
 import { settings } from '../lib/settings.js';
 import { t } from '../lib/i18n.js';
@@ -100,7 +100,17 @@ export function createVoiceComposer({ micButton, wrap, onSend, onRecordingChange
     timer = setInterval(() => {
       const elapsed = recorder.elapsed();
       timeLabel.textContent = formatDuration(elapsed);
-      if (elapsed >= MAX_RECORDING_MS) finish('send');
+      if (elapsed >= MAX_RECORDING_MS) return finish('send');
+      // iOS can drop the final pointerup/pointercancel (a system gesture or lost pointer capture).
+      // "Holding" only offers slide gestures, so without this the bar would keep recording with no
+      // reachable Send or Cancel. Fall back to the locked layout, which has real buttons.
+      if (phase === 'holding' && pointerId === null) {
+        setPhase('locked');
+        mic.style.transform = '';
+        lock.style.transform = '';
+        slide.style.transform = '';
+        slide.style.opacity = '';
+      }
     }, 200);
   }
 
@@ -182,8 +192,18 @@ export function createVoiceComposer({ micButton, wrap, onSend, onRecordingChange
     if (performance.now() - pressedAt < 350) { recorder.cancel(); reset(); showHint(); return; }
     finish('send');
   };
+  const cancelPointer = event => {
+    if (event.pointerId !== pointerId) return;
+    if (phase === 'holding') { pointerId = null; return finish('cancel'); }
+    release(event);
+  };
   micButton.addEventListener('pointerup', release);
-  micButton.addEventListener('pointercancel', event => { if (phase === 'holding') finish('cancel'); else release(event); });
+  micButton.addEventListener('pointercancel', cancelPointer);
+  // The finger can leave the button, or iOS can deliver the final event somewhere else entirely.
+  // Window-level listeners guarantee a release is always seen; both handlers ignore stale pointer
+  // ids, so the button and window firing for the same event is harmless.
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', cancelPointer);
   // Tap mode (hold-to-record switched off) and keyboard users.
   micButton.addEventListener('click', event => {
     event.preventDefault();
@@ -208,7 +228,12 @@ export function createVoiceComposer({ micButton, wrap, onSend, onRecordingChange
       if (phase === 'preview') { transition += 1; reset(); }
       else if (phase !== 'idle') finish('cancel');
     },
-    destroy() { if (phase !== 'idle') { transition += 1; recorder.cancel(); reset(); } bar.remove(); }
+    destroy() {
+      if (phase !== 'idle') { transition += 1; recorder.cancel(); reset(); }
+      window.removeEventListener('pointerup', release);
+      window.removeEventListener('pointercancel', cancelPointer);
+      bar.remove();
+    }
   };
 }
 

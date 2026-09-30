@@ -12,7 +12,7 @@ import { openEditProfile } from './profile.js';
 import { preparePhoto } from '../components/attach.js';
 import { pickFiles, uploadFiles } from '../components/media.js';
 
-const APP_VERSION = '3.0';
+const APP_VERSION = '3.0.2';
 const COLORS = { blue: '#3b82f6', gray: '#8e8e93', red: '#ef4444', green: '#22b573', purple: '#8b5cf6', teal: '#14b8a6', orange: '#f59e0b', indigo: '#6366f1', pink: '#ec4899' };
 
 /* --------------------------------- root --------------------------------- */

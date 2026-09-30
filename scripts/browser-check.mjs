@@ -103,6 +103,18 @@ try {
     return JSON.stringify(layout);
   });
 
+  await check('the tab bar paints its home-indicator area opaquely', async () => {
+    // A translucent bar lets the page background show through the bottom safe area, which reads as
+    // an empty strip under the tabs on phones with a home indicator.
+    const paint = await evaluate(pageA, `
+      const bar=document.querySelector('.tabbar');
+      const style=getComputedStyle(bar);
+      const alpha=(style.backgroundColor.match(/rgba?\\(([^)]+)\\)/)?.[1]||'').split(',').map(p=>p.trim())[3];
+      return { background: style.backgroundColor, alpha: alpha === undefined ? 1 : Number(alpha), paddingBottom: style.paddingBottom };`);
+    if (paint.alpha < 1) throw new Error(`tab bar background is translucent: ${JSON.stringify(paint)}`);
+    return `${paint.background}, safe-area padding ${paint.paddingBottom}`;
+  });
+
   await check('root screen has stories, folders, and compose FAB', async () => {
     await waitFor(pageA, "document.querySelector('.stories-row') && document.querySelector('.folder-tabs') && document.querySelector('.fab')");
     const labels = await evaluate(pageA, "return [...document.querySelectorAll('.folder-tab')].map(x=>x.textContent.trim()).join(' / ');");
@@ -325,6 +337,42 @@ try {
     } finally {
       if (mocked) await evaluate(pageA, `window.MediaRecorder=window.__circleRealMediaRecorder;delete window.__circleRealMediaRecorder;return true;`).catch(() => {});
     }
+  });
+
+  await check('a recording still sends when the final pointer event misses the microphone', async () => {
+    // iOS can deliver the release somewhere other than the mic button, or drop it entirely. Holding
+    // offers only slide gestures, so a lost pointer used to leave no way to send or cancel.
+    const before = (await apiCall(pageA, '/api/conversations')).data.conversations.find(x => x.kind === 'group');
+    const beforeVoice = (await apiCall(pageA, `/api/conversations/${before.id}/messages`)).data.messages.filter(x => x.kind === 'voice').length;
+    await evaluate(pageA, `const b=document.querySelector('.chat-voice');b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:21,pointerType:'touch',clientX:370,clientY:800}));return true;`);
+    await waitFor(pageA, "document.querySelector('[data-composer-wrap]').dataset.recording === 'holding'", { timeout: 7000, label: 'voice recording' });
+    await sleep(1200);
+    // Release on the document body, never on the microphone button.
+    await evaluate(pageA, `document.body.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:21,pointerType:'touch',clientX:120,clientY:300}));return true;`);
+    await waitFor(pageA, "document.querySelector('[data-composer-wrap]').dataset.recording === 'idle'", { timeout: 15000, label: 'recording released' });
+    await waitFor(pageA, "!document.querySelector('.message.pending')", { timeout: 15000, label: 'voice settled' });
+    const afterVoice = (await apiCall(pageA, `/api/conversations/${before.id}/messages`)).data.messages.filter(x => x.kind === 'voice').length;
+    if (afterVoice - beforeVoice !== 1) throw new Error(`created ${afterVoice - beforeVoice} voice messages`);
+    return 'released off-target and still sent exactly once';
+  });
+
+  await check('a stuck hold recovers to controls that can be tapped', async () => {
+    await evaluate(pageA, `const b=document.querySelector('.chat-voice');b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:22,pointerType:'touch',clientX:370,clientY:800}));return true;`);
+    await waitFor(pageA, "document.querySelector('[data-composer-wrap]').dataset.recording === 'holding'", { timeout: 7000, label: 'voice recording' });
+    // Simulate the release being swallowed entirely by the platform.
+    await evaluate(pageA, "window.dispatchEvent(new PointerEvent('pointercancel',{pointerId:999,pointerType:'touch'}));return true;");
+    await evaluate(pageA, "document.querySelector('.chat-voice').dispatchEvent(new PointerEvent('lostpointercapture',{bubbles:true,pointerId:22}));return true;");
+    await evaluate(pageA, "window.dispatchEvent(new PointerEvent('pointerup',{pointerId:22,pointerType:'touch'}));return true;");
+    await waitFor(pageA, "['locked','sending','idle'].includes(document.querySelector('[data-composer-wrap]').dataset.recording)", { timeout: 8000, label: 'escapable phase' });
+    const escapable = await evaluate(pageA, `
+      const wrap=document.querySelector('[data-composer-wrap]');
+      if(wrap.dataset.recording==='idle')return {phase:'idle',ok:true};
+      const buttons=[...document.querySelectorAll('.recording-bar button')].filter(b=>{const s=getComputedStyle(b);const r=b.getBoundingClientRect();return s.display!=='none'&&s.pointerEvents!=='none'&&r.width>=44&&r.height>=44;});
+      return {phase:wrap.dataset.recording,ok:buttons.length>0,buttons:buttons.map(b=>b.dataset.action)};`);
+    if (!escapable.ok) throw new Error(`no tappable control in phase ${escapable.phase}: ${JSON.stringify(escapable)}`);
+    const state = await evaluate(pageA, "const w=document.querySelector('[data-composer-wrap]');if(w.dataset.recording!=='idle'){const b=document.querySelector('.recording-bar [data-action=\"cancel-recording\"]');if(b)b.click();}await new Promise(r=>setTimeout(r,600));return document.querySelector('[data-composer-wrap]').dataset.recording;");
+    if (state !== 'idle') throw new Error(`could not return to idle (${state})`);
+    return `recovered to ${escapable.phase} with ${(escapable.buttons || []).join(', ') || 'no bar'}`;
   });
 
   await check('only one voice player can be active and speed cycles', async () => {
