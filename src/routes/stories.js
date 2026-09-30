@@ -1,9 +1,11 @@
-import { all, one, run } from '../db.js';
+import { all, one, run, transaction } from '../db.js';
 import { config } from '../config.js';
 import { getOrCreateDirectConversation } from '../conversations.js';
 import { createMessage, fanout } from '../messages.js';
-import { notify } from '../notifications.js';
-import { broadcast, sendMany } from '../realtime.js';
+import { notify, notifyStory } from '../notifications.js';
+import { canSeeStoriesOf, hiddenStoryAuthorIds } from '../privacy.js';
+import { broadcast, onlineUserIds, sendMany } from '../realtime.js';
+import { getSettings } from '../settings.js';
 import { cleanText, HttpError, iso, json, parseJson } from '../utils.js';
 
 function person(row) {
@@ -30,6 +32,7 @@ function formatStory(row, viewerId) {
   return {
     id: row.id, caption: row.caption, createdAt: iso(row.created_at), expiresAt: iso(row.expires_at),
     expired: row.expires_at <= new Date().toISOString(),
+    allowReplies: getSettings(row.author_id).privacy.storyReplies,
     viewed, views, viewCount: isAuthor ? views.length : undefined, viewerReaction: reaction,
     media: { id: row.media_id, url: `/api/media/${row.media_id}`, mimeType: row.mime_type },
     author: { id: row.author_id, username: row.username, displayName: row.display_name, avatarUrl: row.avatar_media_id ? `/api/media/${row.avatar_media_id}` : null }
@@ -43,16 +46,48 @@ function getStory(id) {
   return one(`${STORY_SELECT} WHERE s.id = ?`, Number(id));
 }
 
-function liveStory(id) {
+/** A story the viewer may interact with: live, and not hidden from them by the author or a block. */
+function liveStory(id, viewerId) {
   const story = getStory(id);
-  if (!story || story.expires_at <= new Date().toISOString()) throw new HttpError(404, 'Story is no longer available.');
+  if (!story || story.expires_at <= new Date().toISOString() || !canSeeStoriesOf(story.author_id, viewerId)) throw new HttpError(404, 'Story is no longer available.');
   return story;
+}
+
+/** Members allowed to see an author's stories (everyone minus hidden-from and blocks). */
+function storyAudience(authorId) {
+  return all('SELECT id FROM users WHERE id <> ?', authorId).map(row => Number(row.id)).filter(id => canSeeStoriesOf(authorId, id));
 }
 
 export function registerStoryRoutes(router) {
   router.get('/api/stories', (req, res) => {
-    const rows = all(`${STORY_SELECT} WHERE s.expires_at > ? ORDER BY s.created_at`, new Date().toISOString());
+    const hidden = hiddenStoryAuthorIds(req.session.user.id);
+    const rows = all(`${STORY_SELECT} WHERE s.expires_at > ? ORDER BY s.created_at`, new Date().toISOString())
+      .filter(row => row.author_id === req.session.user.id || !hidden.has(row.author_id));
     json(res, 200, { stories: rows.map(row => formatStory(row, req.session.user.id)) });
+  });
+
+  // Story privacy: who your stories are hidden from, and whether members can reply to them.
+  router.get('/api/stories/privacy', (req, res) => {
+    const hiddenFrom = all('SELECT user_id FROM story_hidden WHERE author_id = ?', req.session.user.id).map(row => Number(row.user_id));
+    json(res, 200, { hiddenFrom, allowReplies: getSettings(req.session.user.id).privacy.storyReplies });
+  });
+  router.put('/api/stories/privacy', async (req, res) => {
+    const body = await parseJson(req);
+    const old = new Set(all('SELECT user_id FROM story_hidden WHERE author_id = ?', req.session.user.id).map(row => Number(row.user_id)));
+    const ids = [...new Set((Array.isArray(body.hiddenFrom) ? body.hiddenFrom : []).map(Number))].filter(id => id !== req.session.user.id && one('SELECT id FROM users WHERE id = ?', id));
+    const next = new Set(ids);
+    transaction(() => {
+      run('DELETE FROM story_hidden WHERE author_id = ?', req.session.user.id);
+      for (const id of ids) run('INSERT INTO story_hidden(author_id, user_id) VALUES (?, ?)', req.session.user.id, id);
+    });
+    const live = all(`${STORY_SELECT} WHERE s.author_id = ? AND s.expires_at > ? ORDER BY s.created_at`, req.session.user.id, new Date().toISOString());
+    const newlyHidden = ids.filter(id => !old.has(id));
+    const newlyAllowed = [...old].filter(id => !next.has(id) && canSeeStoriesOf(req.session.user.id, id));
+    for (const story of live) {
+      sendMany(newlyHidden, 'story:deleted', { storyId: story.id });
+      for (const viewerId of newlyAllowed) sendMany([viewerId], 'story:created', { story: formatStory(story, viewerId) });
+    }
+    json(res, 200, { hiddenFrom: ids });
   });
 
   // The author's own history: live and expired stories (kept for STORY_ARCHIVE_DAYS) with viewers.
@@ -77,12 +112,15 @@ export function registerStoryRoutes(router) {
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
     const result = run('INSERT INTO stories(author_id,media_id,caption,expires_at,created_at) VALUES (?,?,?,?,?)', req.session.user.id, mediaId, caption, expiresAt, new Date().toISOString());
     const row = getStory(result.lastInsertRowid);
-    broadcast('story:created', { story: formatStory(row, -1) }, null, req.session.user.id);
+    const audience = storyAudience(req.session.user.id);
+    const online = new Set(onlineUserIds());
+    for (const id of audience) if (online.has(id)) sendMany([id], 'story:created', { story: formatStory(row, id) });
+    notifyStory(req.session.user.id, req.session.user.displayName, audience);
     json(res, 201, { story: formatStory(row, req.session.user.id) });
   });
 
   router.post('/api/stories/:id/view', (req, res, params) => {
-    const story = liveStory(params.id);
+    const story = liveStory(params.id, req.session.user.id);
     if (story.author_id === req.session.user.id) return json(res, 200, { ok: true });
     const inserted = run('INSERT OR IGNORE INTO story_views(story_id,user_id,viewed_at) VALUES (?,?,?)', story.id, req.session.user.id, new Date().toISOString()).changes;
     // Only a first view is news to the author; repeat views never create duplicate viewer entries.
@@ -94,7 +132,7 @@ export function registerStoryRoutes(router) {
   });
 
   router.post('/api/stories/:id/reaction', async (req, res, params) => {
-    const story = liveStory(params.id);
+    const story = liveStory(params.id, req.session.user.id);
     if (story.author_id === req.session.user.id) throw new HttpError(400, 'You cannot react to your own story.');
     const body = await parseJson(req); const selected = cleanText(body.reaction, 16, 'Reaction');
     if (!selected) run('DELETE FROM story_reactions WHERE story_id=? AND user_id=?', story.id, req.session.user.id);
@@ -107,8 +145,9 @@ export function registerStoryRoutes(router) {
   });
 
   router.post('/api/stories/:id/reply', async (req, res, params) => {
-    const story = liveStory(params.id);
+    const story = liveStory(params.id, req.session.user.id);
     if (story.author_id === req.session.user.id) throw new HttpError(400, 'You cannot reply to your own story.');
+    if (!getSettings(story.author_id).privacy.storyReplies) throw new HttpError(403, 'Replies to this story are turned off.');
     const body = await parseJson(req); const text = cleanText(body.body, 1200, 'Reply'); if (!text) throw new HttpError(400, 'Reply cannot be empty.');
     const conversationId = getOrCreateDirectConversation(req.session.user.id, story.author_id);
     const { id } = createMessage({ conversationId, senderId: req.session.user.id, kind: 'story_reply', body: text, storyId: story.id });
@@ -121,5 +160,13 @@ export function registerStoryRoutes(router) {
     const story = getStory(params.id); if (!story) throw new HttpError(404, 'Story not found.');
     if (story.author_id !== req.session.user.id) throw new HttpError(403, 'You can delete only your own story.');
     run('DELETE FROM stories WHERE id=?', story.id); broadcast('story:deleted', { storyId: story.id }); json(res, 200, { ok: true });
+  });
+
+  // Recent stories of one member (for their profile), respecting the same privacy rules.
+  router.get('/api/users/:id/stories', (req, res, params) => {
+    const authorId = Number(params.id);
+    if (!canSeeStoriesOf(authorId, req.session.user.id)) return json(res, 200, { stories: [] });
+    const rows = all(`${STORY_SELECT} WHERE s.author_id = ? AND s.expires_at > ? ORDER BY s.created_at`, authorId, new Date().toISOString());
+    json(res, 200, { stories: rows.map(row => formatStory(row, req.session.user.id)) });
   });
 }

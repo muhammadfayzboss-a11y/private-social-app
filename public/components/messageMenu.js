@@ -1,81 +1,44 @@
-/**
- * Long-press menu for one message. Only actions that make sense for this viewer and message are
- * offered: edit is for your own text, delete-for-everyone for your own messages, copy only when there
- * is text, and so on.
- */
+/** Forward one or many messages to one or many chats. */
 import { request } from '../api.js';
 import { icon } from '../icons.js';
-import { exactTime } from '../lib/time.js';
 import { loadConversations, state } from '../store.js';
-import { avatar, escapeHtml, modal, toast } from '../ui.js';
-import { MESSAGE_REACTIONS } from './reactions.js';
+import { escapeHtml, modal, toast } from '../ui.js';
+import { t, tn } from '../lib/i18n.js';
+import { conversationAvatar } from './chatRow.js';
 
-export function openMessageMenu(message, { conversation, onAction }) {
-  const mine = message.isMine;
-  const canCopy = Boolean(message.body);
-  const readers = mine ? message.readBy || [] : [];
-  const myReaction = message.reactions?.find(item => item.user.id === state.user?.id)?.reaction;
-  const isPinned = conversation?.pinnedMessage?.id === message.id;
-  const actions = [
-    { id: 'reply', label: 'Reply', icon: 'reply' },
-    canCopy && { id: 'copy', label: 'Copy text', icon: 'copy' },
-    mine && message.kind === 'text' && { id: 'edit', label: 'Edit', icon: 'edit' },
-    { id: 'forward', label: 'Forward', icon: 'forward' },
-    { id: 'pin', label: isPinned ? 'Unpin' : 'Pin', icon: 'pin' },
-    message.media && message.kind !== 'voice' && { id: 'download', label: 'Save to device', icon: 'down' },
-    { id: 'delete', label: 'Delete', icon: 'trash', danger: true }
-  ].filter(Boolean);
-
-  const sheet = modal(`
-    <div class="reaction-bar" role="group" aria-label="React">${MESSAGE_REACTIONS.map(emoji => `
-      <button type="button" data-react="${emoji}" class="${myReaction === emoji ? 'selected' : ''}" aria-label="React ${emoji}">${emoji}</button>`).join('')}
-    </div>
-    <p class="message-menu-time">${icon('clock', 13)} ${mine ? 'Sent' : 'Received'} ${escapeHtml(exactTime(message.createdAt))}${message.editedAt ? ` · edited ${escapeHtml(exactTime(message.editedAt))}` : ''}</p>
-    ${mine && conversation?.kind === 'group' ? `<div class="seen-by">${readers.length
-      ? `${icon('checks', 15)}<span>Seen by ${readers.map(reader => escapeHtml(reader.displayName)).join(', ')}</span>`
-      : `${icon('check', 15)}<span>Not seen yet</span>`}</div>` : ''}
-    <div class="action-list">${actions.map(action => `
-      <button type="button" class="action-item${action.danger ? ' danger' : ''}" data-menu="${action.id}">${icon(action.icon, 21)}<span>${escapeHtml(action.label)}</span></button>`).join('')}
-    </div>`, 'action-sheet message-menu');
-
-  sheet.addEventListener('click', event => {
-    const reaction = event.target.closest('[data-react]');
-    const action = event.target.closest('[data-menu]');
-    if (!reaction && !action) return;
-    sheet.close();
-    if (reaction) onAction('react', reaction.dataset.react === myReaction ? '' : reaction.dataset.react);
-    else onAction(action.dataset.menu);
-  });
-  return sheet;
-}
-
-export async function openForwardPicker(message) {
+export async function openForwardPicker(messages) {
+  const items = (Array.isArray(messages) ? messages : [messages]).filter(message => message?.id);
+  if (!items.length) return;
   const conversations = state.conversations.loaded ? state.conversations.items : await loadConversations();
   const selected = new Set();
   const sheet = modal(`
-    <div class="modal-head"><h2>Forward to…</h2><button class="icon-button" data-close-modal aria-label="Close">${icon('close', 20)}</button></div>
-    <div class="forward-list">${conversations.map(conversation => {
-      const other = conversation.members.find(member => member.id !== state.user?.id);
-      return `<label class="forward-item">
+    <div class="modal-head"><h2>${items.length > 1 ? tn(items.length, 'Forward {n} message', 'Forward {n} messages') : t('Forward to…')}</h2><button class="icon-button" data-close-modal aria-label="${t('Close')}">${icon('close', 20)}</button></div>
+    <label class="search-field">${icon('search', 18)}<input type="search" data-filter placeholder="${t('Search chats')}" autocomplete="off"></label>
+    <div class="forward-list" data-list>${conversations.filter(conversation => !(conversation.blocked?.byMe || conversation.blocked?.byThem)).map(conversation => `
+      <label class="forward-item" data-title="${escapeHtml(conversation.title.toLowerCase())}">
         <input type="checkbox" value="${conversation.id}">
-        ${conversation.kind === 'group' ? `<span class="avatar avatar-sm avatar-group">${icon('users', 16)}</span>` : avatar(other, 'sm')}
+        ${conversationAvatar(conversation, 'sm')}
         <span>${escapeHtml(conversation.title)}</span><i class="check-circle">${icon('check', 14)}</i>
-      </label>`;
-    }).join('')}</div>
-    <button type="button" class="button button-primary button-block" data-send disabled>Forward</button>`);
+      </label>`).join('')}</div>
+    <button type="button" class="button button-primary button-block" data-send disabled>${t('Forward')}</button>`);
   const send = sheet.querySelector('[data-send]');
+  sheet.querySelector('[data-filter]').addEventListener('input', event => {
+    const query = event.target.value.trim().toLowerCase();
+    for (const row of sheet.querySelectorAll('.forward-item')) row.hidden = Boolean(query) && !row.dataset.title.includes(query);
+  });
   sheet.addEventListener('change', event => {
     if (event.target.type !== 'checkbox') return;
     if (event.target.checked) selected.add(Number(event.target.value)); else selected.delete(Number(event.target.value));
     send.disabled = !selected.size;
-    send.textContent = selected.size > 1 ? `Forward to ${selected.size} chats` : 'Forward';
+    send.textContent = selected.size > 1 ? tn(selected.size, 'Forward to {n} chat', 'Forward to {n} chats') : t('Forward');
   });
+  const operationId = `forward-${crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : Date.now().toString(36)}`.slice(0, 48);
   send.addEventListener('click', async () => {
     send.disabled = true;
     try {
-      await request(`/api/messages/${message.id}/forward`, { method: 'POST', body: { conversationIds: [...selected] } });
+      await request('/api/messages/forward', { method: 'POST', body: { messageIds: items.map(message => message.id), conversationIds: [...selected], operationId } });
       sheet.close();
-      toast(selected.size > 1 ? `Forwarded to ${selected.size} chats` : 'Message forwarded');
+      toast(selected.size > 1 ? tn(selected.size, 'Forwarded to {n} chat', 'Forwarded to {n} chats') : t('Forwarded'));
     } catch (error) {
       toast(error.message, 'error');
       send.disabled = false;

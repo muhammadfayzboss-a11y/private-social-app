@@ -22,8 +22,27 @@ let context = null;
 let current = null;                   // { id, url, durationMs, title }
 let status = 'idle';                  // idle | loading | playing | paused | error
 let errorMessage = '';
-let webAudio = null;                  // { source, buffer, startedAt } while the fallback path is active
+let webAudio = null;                  // { source, buffer, offset, startedAt, rate } while the fallback path is active
 let frame = 0;
+let rate = 1;
+const endedListeners = new Set();
+const PLAYED_KEY = 'circle-played-voice';
+let played = null;
+
+function playedSet() {
+  if (!played) { try { played = new Set(JSON.parse(localStorage.getItem(PLAYED_KEY) || '[]')); } catch { played = new Set(); } }
+  return played;
+}
+/** Remembers that a voice message was listened to (drives the "unplayed" dot). */
+export function markPlayed(id) {
+  const set = playedSet();
+  if (set.has(id)) return;
+  set.add(id);
+  try { localStorage.setItem(PLAYED_KEY, JSON.stringify([...set].slice(-800))); } catch { /* storage full */ }
+}
+export function wasPlayed(id) { return playedSet().has(id); }
+export function onEnded(listener) { endedListeners.add(listener); return () => endedListeners.delete(listener); }
+export function playbackRate() { return rate; }
 
 function emit() {
   const snapshot = snapshotFor(current?.id);
@@ -89,7 +108,7 @@ function stopWebAudio() {
 
 function position() {
   if (!current) return 0;
-  if (webAudio && context) return Math.min(context.currentTime - webAudio.startedAt, webAudio.buffer.duration);
+  if (webAudio && context) return Math.min(webAudio.offset + (context.currentTime - webAudio.startedAt) * webAudio.rate, webAudio.buffer.duration);
   if (buffers.has(current.id) && !audio?.getAttribute('src')) return positions.get(current.id) || 0;
   return audio?.getAttribute('src') ? audio.currentTime : positions.get(current.id) || 0;
 }
@@ -111,6 +130,7 @@ function finish() {
   setStatus('idle');
   current = null;
   for (const listener of [...listeners]) listener(finished.id, { status: 'idle', position: 0, duration: duration(finished), error: '' });
+  for (const listener of [...endedListeners]) { try { listener(finished.id); } catch (error) { console.error(error); } }
 }
 
 function fail(message) {
@@ -163,9 +183,10 @@ function playBuffer(offset) {
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   source.connect(ctx.destination);
+  source.playbackRate.value = rate;
   source.onended = () => { if (webAudio?.source === source) finish(); };
   source.start(0, start);
-  webAudio = { source, buffer, startedAt: ctx.currentTime - start };
+  webAudio = { source, buffer, offset: start, startedAt: ctx.currentTime, rate };
   setStatus('playing');
 }
 
@@ -178,6 +199,9 @@ function start(item) {
   if (buffers.has(item.id)) return playBuffer(resumeAt);
   const el = element();
   el.src = item.url;
+  el.playbackRate = rate;
+  el.defaultPlaybackRate = rate;
+  markPlayed(item.id);
   if (resumeAt) el.addEventListener('loadedmetadata', () => { try { el.currentTime = resumeAt; } catch { /* not seekable yet */ } }, { once: true });
   setStatus('loading');
   el.play()?.catch(error => {
@@ -243,6 +267,22 @@ export function seek(item, fraction) {
   emit();
 }
 
+/** 1×, 1.5×, or 2× for every voice message, applied immediately to the one playing. */
+export function setPlaybackRate(next) {
+  rate = [1, 1.5, 2].includes(Number(next)) ? Number(next) : 1;
+  if (audio) { audio.playbackRate = rate; audio.defaultPlaybackRate = rate; }
+  if (webAudio && context) {
+    webAudio.offset = position();
+    webAudio.startedAt = context.currentTime;
+    webAudio.rate = rate;
+    webAudio.source.playbackRate.value = rate;
+  }
+  emit();
+  return rate;
+}
+
+export function currentMediaId() { return current?.id ?? null; }
+
 /** Stops playback entirely (leaving a conversation, signing out). */
 export function stopAll() {
   if (!current) return;
@@ -258,7 +298,7 @@ export function renameMedia(fromId, toId) {
 
 export function snapshotFor(id, item = null) {
   if (id !== null && id !== undefined && current?.id === id) {
-    return { status, position: position(), duration: duration(), error: errorMessage };
+    return { status, position: position(), duration: duration(), error: errorMessage, rate };
   }
   return { status: 'idle', position: positions.get(id) || 0, duration: item ? duration(item) : 0, error: '' };
 }

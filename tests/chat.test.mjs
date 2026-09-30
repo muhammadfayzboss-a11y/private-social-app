@@ -132,6 +132,7 @@ test('delete for me hides a message only from me; delete for everyone removes co
   controller.abort();
 
   assert.equal((await ben.call(`/api/media/${ctx.voiceMediaId}`)).status, 403, 'deleted voice media is no longer readable');
+  assert.equal((await ana.call(`/api/media/${ctx.voiceMediaId}`)).status, 403, 'even the uploader cannot bypass delete-for-everyone with the old URL');
   const reaction = await ben.call(`/api/messages/${ctx.voiceMessageId}/reaction`, { method: 'POST', body: { reaction: '🔥' } });
   assert.equal(reaction.status, 410);
   const conversations = await ben.call('/api/conversations');
@@ -169,11 +170,11 @@ test('pinning, forwarding, and per-member chat settings', async () => {
   const foreignPin = await admin.call(`/api/conversations/${ctx.directId}/pin`, { method: 'POST', body: { messageId: sent.data.message.id } });
   assert.equal(foreignPin.status, 403);
 
-  const forwarded = await ana.call(`/api/messages/${sent.data.message.id}/forward`, { method: 'POST', body: { conversationIds: [ctx.directId] } });
+  const forwarded = await ana.call(`/api/messages/${sent.data.message.id}/forward`, { method: 'POST', body: { conversationIds: [ctx.directId], operationId: 'forward-single-0001' } });
   assert.equal(forwarded.status, 201);
   assert.equal(forwarded.data.messages[0].forwardedFrom.id, ctx.anaId);
   assert.equal(forwarded.data.messages[0].conversationId, ctx.directId);
-  const intoForeign = await admin.call(`/api/messages/${sent.data.message.id}/forward`, { method: 'POST', body: { conversationIds: [ctx.directId] } });
+  const intoForeign = await admin.call(`/api/messages/${sent.data.message.id}/forward`, { method: 'POST', body: { conversationIds: [ctx.directId], operationId: 'forward-single-0001' } });
   assert.equal(intoForeign.status, 403, 'you cannot forward into a chat you are not in');
 
   const settings = await ana.call(`/api/conversations/${ctx.directId}/settings`, { method: 'POST', body: { pinned: true, muted: true } });

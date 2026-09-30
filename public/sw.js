@@ -1,11 +1,14 @@
-const VERSION = 'circle-v3';
+const VERSION = 'circle-v4';
 const SHELL = [
-  '/', '/index.html', '/styles.css', '/app.js', '/api.js', '/ui.js', '/icons.js', '/store.js', '/realtime.js', '/router.js', '/push.js',
-  '/views/auth.js', '/views/home.js', '/views/create.js', '/views/chat.js', '/views/conversation.js', '/views/activity.js', '/views/profile.js',
-  '/components/post.js', '/components/stories.js', '/components/stickerPicker.js', '/components/media.js', '/components/share.js', '/components/reactions.js',
-  '/components/messages.js', '/components/messageMenu.js', '/components/voice.js',
-  '/lib/time.js', '/lib/audio.js', '/lib/recorder.js', '/lib/gestures.js', '/lib/theme.js',
-  '/boot-theme.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'
+  '/', '/index.html', '/styles.css', '/mobile.css', '/boot-theme.js', '/app.js', '/api.js', '/ui.js', '/icons.js', '/store.js', '/realtime.js', '/router.js', '/push.js',
+  '/views/auth.js', '/views/chats.js', '/views/conversation.js', '/views/chatInfo.js', '/views/search.js', '/views/feed.js', '/views/create.js',
+  '/views/activity.js', '/views/profile.js', '/views/settings.js',
+  '/components/post.js', '/components/stories.js', '/components/media.js', '/components/share.js', '/components/reactions.js',
+  '/components/messages.js', '/components/messageMenu.js', '/components/messageFocus.js', '/components/voice.js', '/components/voiceComposer.js',
+  '/components/chatRow.js', '/components/emojiPanel.js', '/components/attach.js', '/components/sharedMedia.js',
+  '/lib/time.js', '/lib/audio.js', '/lib/recorder.js', '/lib/gestures.js', '/lib/theme.js', '/lib/settings.js', '/lib/i18n.js', '/lib/locales/uz.js',
+  '/lib/nav.js', '/lib/overlays.js', '/lib/pull.js', '/lib/sounds.js', '/lib/wallpapers.js',
+  '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'
 ];
 
 self.addEventListener('install', event => {
@@ -13,7 +16,9 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== VERSION).map(key => caches.delete(key)))).then(() => self.clients.claim()));
+  event.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(key => key !== VERSION).map(key => caches.delete(key))))
+    .then(() => self.clients.claim()));
 });
 
 self.addEventListener('fetch', event => {
@@ -22,7 +27,8 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Private data and media always come from the network so nothing sensitive is cached.
+  // Private data and every authenticated media response stay out of Service Worker CacheStorage.
+  // The browser may use their Cache-Control: private response cache, which is scoped to this profile.
   if (url.pathname.startsWith('/api/')) return;
 
   if (request.mode === 'navigate') {
@@ -34,7 +40,7 @@ self.addEventListener('fetch', event => {
   // The cache is kept up to date and used as the offline fallback.
   event.respondWith(
     fetch(request).then(response => {
-      if (response.ok) caches.open(VERSION).then(cache => cache.put(request, response.clone()));
+      if (response.ok) { const copy = response.clone(); caches.open(VERSION).then(cache => cache.put(request, copy)); }
       return response;
     }).catch(() => caches.match(request))
   );

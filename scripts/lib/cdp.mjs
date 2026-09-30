@@ -167,7 +167,7 @@ export async function fill(page, selector, value) {
   if (!ok) throw new Error(`Input not found: ${selector}`);
 }
 
-export async function reload(page, waitSelector = '.bottom-nav') {
+export async function reload(page, waitSelector = '.tabbar') {
   await page.send('Page.reload', { ignoreCache: false });
   await sleep(400);
   await waitFor(page, `document.querySelector(${JSON.stringify(waitSelector)})`, { label: `reload → ${waitSelector}` });

@@ -6,6 +6,7 @@ export class Router {
   get(pattern, handler, options) { this.add('GET', pattern, handler, options); }
   post(pattern, handler, options) { this.add('POST', pattern, handler, options); }
   patch(pattern, handler, options) { this.add('PATCH', pattern, handler, options); }
+  put(pattern, handler, options) { this.add('PUT', pattern, handler, options); }
   delete(pattern, handler, options) { this.add('DELETE', pattern, handler, options); }
   match(method, pathname) {
     for (const route of this.routes) {

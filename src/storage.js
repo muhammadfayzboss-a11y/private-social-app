@@ -7,18 +7,38 @@ import { HttpError, safeDecode } from './utils.js';
 
 fs.mkdirSync(config.uploadDir, { recursive: true });
 
-const allowed = new Set([
-  'image/jpeg', 'image/png', 'image/webp', 'image/gif',
-  'video/mp4', 'video/webm', 'video/quicktime',
-  'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg'
-]);
+const IMAGES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const VIDEOS = ['video/mp4', 'video/webm', 'video/quicktime'];
+const AUDIO = ['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg'];
+const OFFICE = {
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx'
+};
+const DOCUMENTS = ['application/pdf', 'application/zip', 'application/msword', 'application/vnd.ms-excel', 'application/vnd.ms-powerpoint', ...Object.keys(OFFICE), 'text/plain', 'text/csv', 'text/markdown'];
+const allowed = new Set([...IMAGES, ...VIDEOS, ...AUDIO, ...DOCUMENTS]);
+/** What each upload purpose may contain; anything else is refused even if it is a valid file. */
+const PURPOSE_TYPES = {
+  avatar: new Set(IMAGES), wallpaper: new Set(IMAGES), post: new Set([...IMAGES, ...VIDEOS]), story: new Set([...IMAGES, ...VIDEOS]),
+  chat: new Set([...IMAGES, ...VIDEOS]), voice: new Set([...AUDIO, 'video/webm', 'video/mp4']), file: allowed
+};
+export const UPLOAD_PURPOSES = Object.keys(PURPOSE_TYPES);
 // Some platforms label the same containers differently; normalise before checking.
-const aliases = { 'audio/x-m4a': 'audio/mp4', 'audio/m4a': 'audio/mp4', 'audio/aac': 'audio/mp4', 'audio/mp3': 'audio/mpeg', 'video/x-m4v': 'video/mp4' };
+const aliases = { 'audio/x-m4a': 'audio/mp4', 'audio/m4a': 'audio/mp4', 'audio/aac': 'audio/mp4', 'audio/mp3': 'audio/mpeg', 'video/x-m4v': 'video/mp4', 'application/x-zip-compressed': 'application/zip', 'text/x-markdown': 'text/markdown' };
 const extensions = {
   'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
   'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
-  'audio/webm': '.webm', 'audio/mp4': '.m4a', 'audio/mpeg': '.mp3', 'audio/ogg': '.ogg'
+  'audio/webm': '.webm', 'audio/mp4': '.m4a', 'audio/mpeg': '.mp3', 'audio/ogg': '.ogg',
+  'application/pdf': '.pdf', 'application/zip': '.zip', 'application/msword': '.doc', 'application/vnd.ms-excel': '.xls', 'application/vnd.ms-powerpoint': '.ppt',
+  ...OFFICE, 'text/plain': '.txt', 'text/csv': '.csv', 'text/markdown': '.md'
 };
+
+function isPlainText(buffer) {
+  const sample = buffer.subarray(0, 65536);
+  if (sample.includes(0)) return false;
+  try { new TextDecoder('utf-8', { fatal: true }).decode(sample.length === buffer.length ? sample : sample.subarray(0, sample.lastIndexOf(10) + 1 || sample.length)); return true; }
+  catch { return false; }
+}
 
 /**
  * Identifies the real format from the file's leading bytes. Container formats (MP4/MOV, WebM, Ogg)
@@ -35,6 +55,12 @@ export function sniffMime(buffer, supplied) {
   if (head.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return ['video/webm', 'audio/webm'].includes(supplied) ? supplied : 'video/webm';
   if (head.subarray(0, 4).toString('latin1') === 'OggS') return 'audio/ogg';
   if (head.subarray(0, 3).toString('latin1') === 'ID3' || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0)) return 'audio/mpeg';
+  if (head.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
+  if (head.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return supplied === 'application/zip' || OFFICE[supplied] ? supplied : 'application/zip';
+  if (head.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))) {
+    return ['application/msword', 'application/vnd.ms-excel', 'application/vnd.ms-powerpoint'].includes(supplied) ? supplied : 'application/msword';
+  }
+  if (['text/plain', 'text/csv', 'text/markdown'].includes(supplied) && isPlainText(buffer)) return supplied;
   return null;
 }
 
@@ -46,7 +72,9 @@ function boundedInt(value, max) {
 export async function receiveUpload(req, ownerId, purpose) {
   const declared = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
   const suppliedMime = aliases[declared] || declared;
-  if (!allowed.has(suppliedMime)) throw new HttpError(415, 'Unsupported media type.');
+  const permitted = PURPOSE_TYPES[purpose];
+  if (!permitted) throw new HttpError(400, 'Unsupported upload purpose.');
+  if (!permitted.has(suppliedMime)) throw new HttpError(415, purpose === 'file' ? 'This file type cannot be shared.' : 'Unsupported media type.');
   const declaredLength = Number(req.headers['content-length'] || 0);
   if (declaredLength > config.maxUploadBytes) throw new HttpError(413, 'File exceeds the upload limit.');
   const chunks = [];
@@ -59,10 +87,9 @@ export async function receiveUpload(req, ownerId, purpose) {
   if (!size) throw new HttpError(400, 'The uploaded file is empty.');
   const buffer = Buffer.concat(chunks);
   const mime = sniffMime(buffer, suppliedMime);
-  if (!mime || !allowed.has(mime)) throw new HttpError(415, 'File content does not match an allowed format.');
+  if (!mime || !permitted.has(mime)) throw new HttpError(415, 'File content does not match an allowed format.');
   // Images must be declared as images and vice versa; audio and video may share a container.
   if ((mime.startsWith('image/')) !== suppliedMime.startsWith('image/')) throw new HttpError(415, 'File content does not match its declared type.');
-  if (purpose === 'voice' && !mime.startsWith('audio/') && mime !== 'video/webm' && mime !== 'video/mp4') throw new HttpError(415, 'Voice messages must be audio.');
   // Some recorders label audio-only WebM/MP4 as video; voice uploads are always stored as audio.
   const storedMime = purpose === 'voice' ? mime.replace(/^video\//, 'audio/') : mime;
   const storageKey = `${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}${extensions[storedMime] || ''}`;
@@ -74,9 +101,12 @@ export async function receiveUpload(req, ownerId, purpose) {
   const width = boundedInt(req.headers['x-media-width'], 20000);
   const height = boundedInt(req.headers['x-media-height'], 20000);
   const durationMs = boundedInt(req.headers['x-media-duration'], 6 * 3600 * 1000);
+  // A tiny blurred preview (≈1 KB) shown while the full image loads, like native messengers.
+  const thumbHeader = String(req.headers['x-media-thumb'] || '');
+  const thumb = thumbHeader.length <= 4000 && /^data:image\/(jpeg|webp|png);base64,[A-Za-z0-9+/]+=*$/.test(thumbHeader) ? thumbHeader : null;
   try {
-    const result = run('INSERT INTO media(owner_id, storage_key, original_name, mime_type, size_bytes, purpose, width, height, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      ownerId, storageKey, originalName, storedMime, size, purpose, width, height, durationMs);
+    const result = run('INSERT INTO media(owner_id, storage_key, original_name, mime_type, size_bytes, purpose, width, height, duration_ms, thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ownerId, storageKey, originalName, storedMime, size, purpose, width, height, durationMs, thumb);
     return one('SELECT * FROM media WHERE id = ?', result.lastInsertRowid);
   } catch (error) { fs.unlinkSync(destination); throw error; }
 }
@@ -92,11 +122,18 @@ export function parseRange(header, size) {
   return { start, end };
 }
 
-export function sendMedia(req, res, media) {
+/** Anything that is not a photo, video, or audio clip is always downloaded, never rendered inline. */
+function isInlineType(mime) { return /^(image|video|audio)\//.test(mime); }
+
+export function sendMedia(req, res, media, { download = false } = {}) {
   const file = path.join(config.uploadDir, media.storage_key);
   if (!fs.existsSync(file)) throw new HttpError(404, 'Media file is unavailable.');
   const stat = fs.statSync(file);
   res.setHeader('content-type', media.mime_type);
+  if (download || !isInlineType(media.mime_type)) {
+    const fallback = media.original_name.replace(/[^\x20-\x7e]|["\\]/g, '_') || 'file';
+    res.setHeader('content-disposition', `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(media.original_name || 'file')}`);
+  }
   res.setHeader('accept-ranges', 'bytes');
   res.setHeader('cache-control', 'private, max-age=86400');
   res.setHeader('x-content-type-options', 'nosniff');

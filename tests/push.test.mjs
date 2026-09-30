@@ -101,7 +101,7 @@ test('an offline member receives an encrypted push notification for new activity
   assert.match(request.headers.authorization, /^vapid t=[\w-]+\.[\w-]+\.[\w-]+, k=/);
   const payload = decryptPushBody(request.body);
   assert.match(payload.body, /Ana Ruiz commented on your post: Stunning shot/);
-  assert.match(payload.url, /^\/\?post=\d+$/);
+  assert.match(payload.url, /^\/feed\?post=\d+$/);
 });
 
 test('expired push endpoints are removed after a 410 response', async () => {
@@ -110,7 +110,8 @@ test('expired push endpoints are removed after a 410 response', async () => {
   const endpoint = `http://127.0.0.1:${goneService.address().port}/gone`;
 
   const member = dbModule.one('SELECT id FROM users WHERE username = ?', 'ana');
-  dbModule.run('INSERT INTO push_subscriptions(user_id, endpoint, subscription_json) VALUES (?, ?, ?)', member.id, endpoint,
+  const session = dbModule.one('SELECT id FROM sessions WHERE user_id = ? ORDER BY id DESC LIMIT 1', member.id);
+  dbModule.run('INSERT INTO push_subscriptions(user_id, session_id, endpoint, subscription_json) VALUES (?, ?, ?, ?)', member.id, session.id, endpoint,
     JSON.stringify({ endpoint, keys: { p256dh: subscriberPublic.toString('base64url'), auth: authSecret.toString('base64url') } }));
 
   await sendPushToUser(member.id, { title: 'Circle', body: 'test' });

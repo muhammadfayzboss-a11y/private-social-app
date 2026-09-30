@@ -68,7 +68,7 @@ export function renderAuth(host, { needsSetup, onAuthenticated }) {
         const data = await request(endpoint, { method: 'POST', body: payload });
         setCsrf(data.csrfToken);
         toast(mode === 'login' ? `Welcome back, ${data.user.displayName}` : `Welcome to Circle, ${data.user.displayName}`);
-        onAuthenticated(data.user);
+        onAuthenticated(data.user, data.settings);
       } catch (error) {
         toast(error.message, 'error');
         submit.disabled = false;

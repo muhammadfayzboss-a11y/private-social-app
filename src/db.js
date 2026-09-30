@@ -39,11 +39,55 @@ function migrate() {
   addColumn('conversation_members', 'pinned_at', 'TEXT');
   addColumn('conversation_members', 'muted', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('users', 'show_last_seen', 'INTEGER NOT NULL DEFAULT 1');
+  addColumn('users', 'read_receipts', 'INTEGER NOT NULL DEFAULT 1');
+  addColumn('users', 'settings_json', "TEXT NOT NULL DEFAULT '{}'");
+  addColumn('conversation_members', 'archived_at', 'TEXT');
+  addColumn('conversation_members', 'marked_unread', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('conversation_members', 'cleared_before_id', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('media', 'thumb', 'TEXT');
+  addColumn('messages', 'link_url', 'TEXT');
+  addColumn('push_subscriptions', 'session_id', 'INTEGER REFERENCES sessions(id) ON DELETE CASCADE');
+  // Legacy subscriptions cannot be tied safely to a particular device; ask those devices to enable
+  // push once again instead of risking delivery after remote session termination.
+  run('DELETE FROM push_subscriptions WHERE session_id IS NULL');
+  rebuildMessagesWithFileKind();
 
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client ON messages(sender_id, client_id) WHERE client_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(media_id) WHERE media_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_messages_links ON messages(conversation_id, id DESC) WHERE link_url IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_push_session ON push_subscriptions(session_id);
   `);
+}
+
+/**
+ * SQLite cannot alter a CHECK constraint, so databases created before file messages existed get
+ * their messages table rebuilt using SQLite's documented procedure (foreign keys off, copy, swap,
+ * verify, foreign keys on). Other tables reference "messages" by name, so they bind to the new table.
+ */
+function rebuildMessagesWithFileKind() {
+  const definition = one("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'")?.sql || '';
+  if (!definition || definition.includes("'file'")) return;
+  const columns = all('PRAGMA table_info(messages)').map(column => `"${column.name}"`).join(', ');
+  const rebuilt = definition
+    .replace(/CREATE TABLE\s+(IF NOT EXISTS\s+)?"?messages"?/i, 'CREATE TABLE messages_rebuild')
+    .replace("'story_reply')", "'story_reply','file')");
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(rebuilt);
+      db.exec(`INSERT INTO messages_rebuild(${columns}) SELECT ${columns} FROM messages`);
+      db.exec('DROP TABLE messages');
+      db.exec('ALTER TABLE messages_rebuild RENAME TO messages');
+      db.exec(fs.readFileSync(new URL('./schema.sql', import.meta.url), 'utf8').replace(/PRAGMA[^;]*;/g, ''));
+      const problems = all('PRAGMA foreign_key_check');
+      if (problems.length) throw new Error(`foreign key check failed after migration (${problems.length} rows)`);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 
 migrate();

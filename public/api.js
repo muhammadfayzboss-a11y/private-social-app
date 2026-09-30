@@ -23,6 +23,8 @@ export async function request(path, options = {}) {
     const error = new Error(data?.error?.message || `Request failed (${response.status})`);
     error.status = response.status;
     error.code = data?.error?.code;
+    // Expiry or remote device termination must remove cached authenticated UI immediately.
+    if (response.status === 401 && !path.startsWith('/api/auth/')) window.dispatchEvent(new CustomEvent('circle:auth-revoked'));
     throw error;
   }
   return data;
@@ -34,5 +36,6 @@ export async function upload(file, purpose, meta = {}) {
   if (meta.width) headers['x-media-width'] = String(Math.round(meta.width));
   if (meta.height) headers['x-media-height'] = String(Math.round(meta.height));
   if (meta.durationMs) headers['x-media-duration'] = String(Math.round(meta.durationMs));
+  if (meta.thumb && meta.thumb.length < 4000) headers['x-media-thumb'] = meta.thumb;
   return request(`/api/media?purpose=${encodeURIComponent(purpose)}`, { method: 'POST', headers, body: file });
 }

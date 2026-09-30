@@ -1,5 +1,7 @@
 import { icon } from './icons.js';
 import { exactTime, relativeTime } from './lib/time.js';
+import { closeOverlay, openOverlay } from './lib/overlays.js';
+import { t } from './lib/i18n.js';
 
 export function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
@@ -60,8 +62,8 @@ export function toast(message, type = 'info') {
 let openSheets = 0;
 
 /**
- * Bottom sheet. Returns the backdrop element (callers use .querySelector / .remove()). Also closes
- * on Escape, on the backdrop, via [data-close-modal], and by dragging the sheet down.
+ * Bottom sheet. Returns the backdrop element (callers use .querySelector / .close()). Closes on
+ * Escape, the backdrop, [data-close-modal], dragging the sheet down, and the Android back button.
  */
 export function modal(content, className = '') {
   const root = document.createElement('div');
@@ -70,47 +72,48 @@ export function modal(content, className = '') {
   const sheet = root.querySelector('.modal-sheet');
   const previousFocus = document.activeElement;
   let closed = false;
+  let overlayId = null;
 
-  const finish = () => {
-    if (closed) return;
+  const finish = ({ fromHistory = false } = {}) => {
+    if (closed) return false;
     closed = true;
     openSheets = Math.max(0, openSheets - 1);
     if (!openSheets) document.documentElement.classList.remove('sheet-open');
     document.removeEventListener('keydown', onKey);
+    if (!fromHistory) closeOverlay(overlayId);
     root.dispatchEvent(new CustomEvent('sheet:closed'));
     if (previousFocus?.isConnected && typeof previousFocus.focus === 'function' && !previousFocus.matches?.('textarea, input')) previousFocus.focus({ preventScroll: true });
+    return true;
   };
   const nativeRemove = root.remove.bind(root);
+  const animateOut = () => { root.classList.remove('open'); root.classList.add('closing'); setTimeout(nativeRemove, 220); };
   root.remove = () => { finish(); nativeRemove(); };
-  root.close = () => {
-    if (closed) return;
-    root.classList.remove('open');
-    finish();
-    setTimeout(nativeRemove, 220);
-  };
+  root.close = () => { if (finish()) animateOut(); };
   const onKey = event => { if (event.key === 'Escape') root.close(); };
 
   root.addEventListener('click', event => { if (event.target === root || event.target.closest('[data-close-modal]')) root.close(); });
   document.addEventListener('keydown', onKey);
 
-  // Drag down to dismiss, starting from the handle or the sheet's top area when it is scrolled to the top.
+  // Drag down to dismiss, from anywhere on the sheet while it is scrolled to the top.
   let drag = null;
   sheet.addEventListener('pointerdown', event => {
-    if (event.pointerType === 'mouse' || sheet.scrollTop > 0 || event.target.closest('input, textarea, button, [data-no-drag]')) return;
-    drag = { y: event.clientY, dy: 0 };
+    if (event.pointerType === 'mouse' || sheet.scrollTop > 0 || event.target.closest('input, textarea, [data-no-drag], .voice-wave')) return;
+    drag = { y: event.clientY, dy: 0, at: performance.now() };
   });
   sheet.addEventListener('pointermove', event => {
     if (!drag) return;
     drag.dy = Math.max(0, event.clientY - drag.y);
+    if (drag.dy < 6) return;
     sheet.style.transition = 'none';
     sheet.style.transform = `translateY(${drag.dy}px)`;
   }, { passive: true });
   const release = () => {
     if (!drag) return;
-    const { dy } = drag; drag = null;
+    const { dy, at } = drag; drag = null;
+    const fast = dy > 40 && dy / Math.max(1, performance.now() - at) > 0.5;
     sheet.style.transition = '';
     sheet.style.transform = '';
-    if (dy > 90) root.close();
+    if (dy > 110 || fast) root.close();
   };
   sheet.addEventListener('pointerup', release);
   sheet.addEventListener('pointercancel', release);
@@ -118,6 +121,7 @@ export function modal(content, className = '') {
   openSheets += 1;
   document.documentElement.classList.add('sheet-open');
   document.body.append(root);
+  overlayId = openOverlay(() => { if (finish({ fromHistory: true })) animateOut(); });
   requestAnimationFrame(() => root.classList.add('open'));
   return root;
 }
@@ -150,7 +154,7 @@ export async function confirmSheet({ title, text = '', confirm = 'Confirm', dang
   const result = await actionSheet({
     title,
     header: text ? `<p class="sheet-text">${escapeHtml(text)}</p>` : '',
-    actions: [{ id: 'confirm', label: confirm, danger }, { id: 'cancel', label: 'Cancel' }]
+    actions: [{ id: 'confirm', label: confirm, danger }, { id: 'cancel', label: t('Cancel') }]
   });
   return result === 'confirm';
 }
@@ -160,4 +164,51 @@ export const REACTION_LABELS = { heart: 'Love', laugh: 'Haha', wow: 'Wow', sad: 
 /** Reactions use the SVG icon set rather than emoji so they stay consistent across every platform. */
 export function reactionIcon(name, size = 18, filled = true) {
   return `<span class="reaction-icon reaction-${escapeHtml(name)}">${icon(REACTION_ICONS[name] || 'heart', size, filled)}</span>`;
+}
+
+/* ------------------------------- screen chrome ------------------------------- */
+
+/**
+ * Top bar used by every screen: optional back button, centred or leading title with subtitle,
+ * and trailing actions. `data-back` buttons are handled globally (history-aware).
+ */
+export function topBar({ title = '', subtitle = '', back = null, leading = '', actions = '', className = '', titleId = '' } = {}) {
+  return `<header class="topbar ${className}">
+    ${back !== null ? `<button class="icon-button topbar-back" data-back="${escapeHtml(back)}" aria-label="${t('Back')}">${icon('back', 26)}</button>` : leading}
+    <div class="topbar-title"${titleId ? ` id="${titleId}"` : ''}><strong>${title}</strong>${subtitle ? `<small>${subtitle}</small>` : ''}</div>
+    <div class="topbar-actions">${actions}</div>
+  </header>`;
+}
+
+/** Coloured square icon used by settings rows, as in native settings apps. */
+export function tile(iconName, color) {
+  return `<span class="tile" style="--tile:${color}">${icon(iconName, 18)}</span>`;
+}
+
+/**
+ * A grouped list row. `value` shows on the right; `toggle` renders a switch; `href` navigates.
+ */
+export function row({ iconName = '', color = '#8e8e93', label, hint = '', value = '', toggle = null, action = '', href = '', danger = false, chevron = true, attrs = '' }) {
+  const control = toggle !== null ? `<i class="switch${toggle ? ' on' : ''}" role="switch" aria-checked="${Boolean(toggle)}"></i>` : `${value ? `<span class="row-value">${value}</span>` : ''}${chevron && (href || action) && !danger ? `<span class="row-chevron">${icon('chevron', 18)}</span>` : ''}`;
+  return `<button class="row${danger ? ' danger' : ''}" ${href ? `data-href="${escapeHtml(href)}"` : ''} ${action ? `data-row="${escapeHtml(action)}"` : ''} ${attrs}>
+    ${iconName ? tile(iconName, color) : ''}
+    <span class="row-text"><span class="row-label">${label}</span>${hint ? `<small>${hint}</small>` : ''}</span>
+    ${control}
+  </button>`;
+}
+
+export function group(rows, { title = '', footer = '' } = {}) {
+  return `<section class="group">${title ? `<h3 class="group-title">${title}</h3>` : ''}<div class="group-body">${rows.join('')}</div>${footer ? `<p class="group-footer">${footer}</p>` : ''}</section>`;
+}
+
+/** Safe-area insets in px (notch, home indicator), measured from a probe element. */
+let safeProbe = null;
+export function safeAreaInsets() {
+  if (!safeProbe) {
+    safeProbe = document.createElement('div');
+    safeProbe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+    document.body.append(safeProbe);
+  }
+  const style = getComputedStyle(safeProbe);
+  return { top: parseFloat(style.paddingTop) || 0, bottom: parseFloat(style.paddingBottom) || 0, left: parseFloat(style.paddingLeft) || 0, right: parseFloat(style.paddingRight) || 0 };
 }

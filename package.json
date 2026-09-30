@@ -1,6 +1,6 @@
 {
   "name": "circle-private-social",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "description": "A private, invite-only social PWA for close friends: feed, stories, real-time chat, and custom stickers.",
@@ -14,6 +14,9 @@
     "verify": "npm test && npm run verify:browser && npm run verify:deploy",
     "icons": "node scripts/generate-icons.mjs",
     "vapid": "node scripts/generate-vapid.mjs",
-    "check": "node --check src/server.js"
+    "lint": "node scripts/lint.mjs",
+    "typecheck": "node scripts/lint.mjs",
+    "build": "node scripts/build-check.mjs",
+    "check": "npm run lint && npm run build"
   }
 }

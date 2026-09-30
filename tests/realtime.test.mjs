@@ -51,7 +51,7 @@ test('messages, reactions, and notifications arrive over the realtime stream', a
   assert.equal(typing.typing, true);
 
   // New posts and their reactions are pushed to other members.
-  const post = await ana.call('/api/posts', { method: 'POST', body: { body: 'Realtime post' } });
+  await ana.call('/api/posts', { method: 'POST', body: { body: 'Realtime post' } });
   const broadcastPost = await readEvent(reader, 'post:created');
   assert.equal(broadcastPost.post.body, 'Realtime post');
 

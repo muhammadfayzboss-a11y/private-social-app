@@ -82,9 +82,10 @@ export function parseJson(req, maxBytes = 1_000_000) {
  * last-seen time. `self` is used only for the member's own record, which always carries the truth
  * plus their privacy settings.
  */
-export function publicUser(row, online = false, { self = false } = {}) {
+export function publicUser(row, online = false, { self = false, hiddenFrom = null, includePresence = true } = {}) {
   if (!row) return null;
-  const hidesPresence = Number(row.show_last_seen ?? 1) === 0;
+  // `hiddenFrom` holds members in either direction of a block: presence is hidden reciprocally.
+  const hidesPresence = Number(row.show_last_seen ?? 1) === 0 || Boolean(hiddenFrom?.has(Number(row.id)));
   const user = {
     id: row.id,
     username: row.username,
@@ -92,12 +93,14 @@ export function publicUser(row, online = false, { self = false } = {}) {
     bio: row.bio,
     role: row.role,
     avatarUrl: row.avatar_media_id ? `/api/media/${row.avatar_media_id}` : null,
-    online: self ? Boolean(online) : (hidesPresence ? false : Boolean(online)),
-    lastSeenAt: self || !hidesPresence ? iso(row.last_seen_at) : null,
-    presenceHidden: !self && hidesPresence,
     createdAt: iso(row.created_at)
   };
-  if (self) user.privacy = { showLastSeen: !hidesPresence };
+  if (includePresence) {
+    user.online = self ? Boolean(online) : (hidesPresence ? false : Boolean(online));
+    user.lastSeenAt = self || !hidesPresence ? iso(row.last_seen_at) : null;
+    user.presenceHidden = !self && hidesPresence;
+  }
+  if (self) user.privacy = { showLastSeen: Number(row.show_last_seen ?? 1) !== 0, readReceipts: Number(row.read_receipts ?? 1) !== 0 };
   return user;
 }
 

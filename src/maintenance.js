@@ -28,7 +28,7 @@ export function pruneOrphanMedia() {
     WHERE id NOT IN (SELECT COALESCE(avatar_media_id, 0) FROM users)
       AND id NOT IN (SELECT media_id FROM post_media)
       AND id NOT IN (SELECT media_id FROM stories)
-      AND id NOT IN (SELECT COALESCE(media_id, 0) FROM messages)
+      AND id NOT IN (SELECT COALESCE(media_id, 0) FROM messages WHERE deleted_at IS NULL)
       AND id NOT IN (SELECT COALESCE(avatar_media_id, 0) FROM conversations)
       AND created_at <= ?`, new Date(Date.now() - 86400000).toISOString());
   for (const media of orphans) {

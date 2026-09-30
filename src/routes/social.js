@@ -2,8 +2,9 @@ import { REACTIONS } from '../contracts.js';
 import { all, one, run, transaction } from '../db.js';
 import { isOnline, broadcast } from '../realtime.js';
 import { notify } from '../notifications.js';
-import { receiveUpload, sendMedia } from '../storage.js';
+import { receiveUpload, sendMedia, UPLOAD_PURPOSES } from '../storage.js';
 import { rateLimit } from '../auth.js';
+import { blockedByIds, isBlocked } from '../privacy.js';
 import { cleanText, HttpError, iso, json, parseJson, publicUser } from '../utils.js';
 
 const allowedReactions = new Set(REACTIONS);
@@ -44,26 +45,32 @@ function getPost(id) {
 export function registerSocialRoutes(router) {
   router.post('/api/media', async (req, res) => {
     const purpose = String(new URL(req.url, 'http://local').searchParams.get('purpose') || 'general');
-    if (!['avatar','post','story','chat','voice'].includes(purpose)) throw new HttpError(400, 'Unsupported upload purpose.');
+    if (!UPLOAD_PURPOSES.includes(purpose)) throw new HttpError(400, 'Unsupported upload purpose.');
     rateLimit(`upload:${req.session.user.id}`, 40, 60000);
     const media = await receiveUpload(req, req.session.user.id, purpose);
-    json(res, 201, { media: { id: media.id, url: `/api/media/${media.id}`, mimeType: media.mime_type, sizeBytes: media.size_bytes } });
+    json(res, 201, { media: { id: media.id, url: `/api/media/${media.id}`, mimeType: media.mime_type, sizeBytes: media.size_bytes, name: media.original_name } });
   }, { raw: true });
 
-  router.get('/api/media/:id', (req, res, params) => {
+  router.get('/api/media/:id', (req, res, params, url) => {
     const media = one('SELECT * FROM media WHERE id = ?', Number(params.id));
     if (!media) throw new HttpError(404, 'Media not found.');
     const userId = req.session.user.id;
-    // Avatars and posts are shared with the whole circle; stories only while they are live (the author
-    // keeps access for their archive); chat media only for members of a conversation that uses it.
-    const accessible = media.owner_id === userId || one(`SELECT 1 FROM users WHERE avatar_media_id = ?
+    // Owners can read an uncommitted upload (needed between upload and message/post creation), and
+    // their private wallpaper. Once chat media is referenced, the same visibility boundary as the
+    // message list applies: delete-for-me, clear-chat and delete-for-everyone all revoke its URL.
+    const messageReferenced = one('SELECT 1 FROM messages WHERE media_id = ? LIMIT 1', media.id);
+    const ownedDraft = media.owner_id === userId && (!messageReferenced || media.purpose === 'wallpaper');
+    const accessible = ownedDraft || one(`SELECT 1 FROM users WHERE avatar_media_id = ?
       UNION SELECT 1 FROM post_media WHERE media_id = ?
-      UNION SELECT 1 FROM stories WHERE media_id = ? AND (expires_at > ? OR author_id = ?)
+      UNION SELECT 1 FROM stories s WHERE s.media_id = ? AND (s.author_id = ? OR (s.expires_at > ?
+        AND NOT EXISTS (SELECT 1 FROM story_hidden sh WHERE sh.author_id = s.author_id AND sh.user_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE (b.blocker_id = s.author_id AND b.blocked_id = ?) OR (b.blocker_id = ? AND b.blocked_id = s.author_id))))
       UNION SELECT 1 FROM messages m JOIN conversation_members cm ON cm.conversation_id = m.conversation_id
-        WHERE m.media_id = ? AND m.deleted_at IS NULL AND cm.user_id = ? LIMIT 1`,
-      media.id, media.id, media.id, new Date().toISOString(), userId, media.id, userId);
+        WHERE m.media_id = ? AND m.deleted_at IS NULL AND cm.user_id = ? AND m.id > COALESCE(cm.cleared_before_id, 0)
+          AND NOT EXISTS (SELECT 1 FROM message_hidden mh WHERE mh.message_id = m.id AND mh.user_id = cm.user_id) LIMIT 1`,
+      media.id, media.id, media.id, userId, new Date().toISOString(), userId, userId, userId, media.id, userId);
     if (!accessible) throw new HttpError(403, 'You do not have access to this media.');
-    sendMedia(req, res, media);
+    sendMedia(req, res, media, { download: url.searchParams.get('download') === '1' });
   });
 
   router.patch('/api/profile', async (req, res) => {
@@ -80,19 +87,30 @@ export function registerSocialRoutes(router) {
     }
     run('UPDATE users SET display_name = ?, bio = ?, avatar_media_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', displayName, bio, avatarId, req.session.user.id);
     const user = one('SELECT * FROM users WHERE id = ?', req.session.user.id);
-    broadcast('profile:updated', { user: publicUser(user, isOnline(user.id)) }, null, user.id);
+    broadcast('profile:updated', { user: publicUser(user, false, { includePresence: false }) }, null, user.id);
     json(res, 200, { user: publicUser(user, true, { self: true }) });
   });
 
   router.patch('/api/profile/privacy', async (req, res) => {
     const body = await parseJson(req);
-    if (typeof body.showLastSeen !== 'boolean') throw new HttpError(400, 'Choose whether to show your last seen time.');
-    run('UPDATE users SET show_last_seen = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', body.showLastSeen ? 1 : 0, req.session.user.id);
+    const changes = {};
+    if (body.showLastSeen !== undefined) {
+      if (typeof body.showLastSeen !== 'boolean') throw new HttpError(400, 'Choose whether to show your last seen time.');
+      changes.show_last_seen = body.showLastSeen ? 1 : 0;
+    }
+    if (body.readReceipts !== undefined) {
+      if (typeof body.readReceipts !== 'boolean') throw new HttpError(400, 'Choose whether to send read receipts.');
+      changes.read_receipts = body.readReceipts ? 1 : 0;
+    }
+    if (!Object.keys(changes).length) throw new HttpError(400, 'Choose a privacy setting to change.');
+    for (const [column, value] of Object.entries(changes)) run(`UPDATE users SET ${column} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, value, req.session.user.id);
     const user = one('SELECT * FROM users WHERE id = ?', req.session.user.id);
     const online = isOnline(user.id);
-    broadcast('profile:updated', { user: publicUser(user, online) }, null, user.id);
-    // Others must see the change immediately, not on their next reload.
-    broadcast('presence', body.showLastSeen ? { userId: user.id, online, lastSeenAt: iso(user.last_seen_at) } : { userId: user.id, online: false, lastSeenAt: null, hidden: true }, null, user.id);
+    broadcast('profile:updated', { user: publicUser(user, false, { includePresence: false }) }, null, user.id);
+    // Others must see presence changes immediately, not on their next reload.
+    if ('show_last_seen' in changes) {
+      broadcast('presence', changes.show_last_seen ? { userId: user.id, online, lastSeenAt: iso(user.last_seen_at) } : { userId: user.id, online: false, lastSeenAt: null, hidden: true }, null, user.id);
+    }
     json(res, 200, { user: publicUser(user, true, { self: true }) });
   });
 
@@ -105,7 +123,16 @@ export function registerSocialRoutes(router) {
       posts: Number(one('SELECT COUNT(*) count FROM posts WHERE author_id = ?', user.id).count),
       activeStories: Number(one('SELECT COUNT(*) count FROM stories WHERE author_id = ? AND expires_at > ?', user.id, new Date().toISOString()).count)
     };
-    json(res, 200, { user: publicUser(user, isOnline(user.id), { self }), posts, stats });
+    const viewerId = req.session.user.id;
+    // The direct chat you share with this member (if any) powers the profile's shared-media tabs.
+    const direct = self ? null : one(`SELECT c.id FROM conversations c
+      JOIN conversation_members x ON x.conversation_id = c.id AND x.user_id = ?
+      JOIN conversation_members y ON y.conversation_id = c.id AND y.user_id = ?
+      WHERE c.kind = 'direct' LIMIT 1`, viewerId, user.id);
+    json(res, 200, {
+      user: publicUser(user, isOnline(user.id), { self, hiddenFrom: blockedByIds(viewerId) }), posts, stats,
+      relationship: self ? null : { blockedByMe: isBlocked(viewerId, user.id), directConversationId: direct?.id || null }
+    });
   });
 
   router.get('/api/feed', (req, res) => {

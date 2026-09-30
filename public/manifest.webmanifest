@@ -1,7 +1,7 @@
 {
-  "name": "Circle — private social",
+  "name": "Circle — private messenger",
   "short_name": "Circle",
-  "description": "A private social space for a small group of close friends.",
+  "description": "A private, invite-only messenger and social space for a small group of close friends.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -10,10 +10,11 @@
     "minimal-ui"
   ],
   "orientation": "portrait",
-  "background_color": "#7357ff",
-  "theme_color": "#7357ff",
+  "background_color": "#6046f0",
+  "theme_color": "#6046f0",
   "categories": [
-    "social"
+    "social",
+    "communication"
   ],
   "icons": [
     {
@@ -44,7 +45,17 @@
   "shortcuts": [
     {
       "name": "Chats",
-      "url": "/chat",
+      "url": "/",
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Search",
+      "url": "/search",
       "icons": [
         {
           "src": "/icons/icon-192.png",

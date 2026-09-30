@@ -8,6 +8,8 @@
  * The phone's clock can also drift from the server's, so relative times are computed against an
  * offset learned from the server (setServerTime).
  */
+import { locale, t } from './i18n.js';
+
 let clockOffset = 0;
 
 export function parseTime(value) {
@@ -34,7 +36,7 @@ const DAY = 86400000;
 function dateLabel(time, { withYear } = {}) {
   const date = new Date(time);
   const sameYear = date.getFullYear() === new Date(now()).getFullYear();
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', ...(withYear || !sameYear ? { year: 'numeric' } : {}) }).format(date);
+  return new Intl.DateTimeFormat(locale(), { month: 'short', day: 'numeric', ...(withYear || !sameYear ? { year: 'numeric' } : {}) }).format(date);
 }
 
 /** "just now", "1m", "5m", "1h", "yesterday", then a date. Never negative, never in the future. */
@@ -43,23 +45,23 @@ export function relativeTime(value) {
   if (time === null) return '';
   const current = now();
   const seconds = Math.max(0, (current - time) / 1000);
-  if (seconds < 45) return 'just now';
+  if (seconds < 45) return t('Just now');
   if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))}m`;
   const today = startOfDay(current);
   // Hours for anything today, and for the last few hours even across midnight ("2h" beats "yesterday" at 1am).
   if (time >= today || seconds < 6 * 3600) return `${Math.floor(seconds / 3600)}h`;
-  if (time >= today - DAY) return 'yesterday';
+  if (time >= today - DAY) return t('Yesterday');
   return dateLabel(time);
 }
 
 export function clockTime(value) {
   const time = parseTime(value);
-  return time === null ? '' : new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(time));
+  return time === null ? '' : new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(new Date(time));
 }
 
 export function exactTime(value) {
   const time = parseTime(value);
-  return time === null ? '' : new Intl.DateTimeFormat(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(time));
+  return time === null ? '' : new Intl.DateTimeFormat(locale(), { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(time));
 }
 
 /** Chat list column: clock time today, weekday this week, otherwise a short date. */
@@ -68,8 +70,8 @@ export function listTime(value) {
   if (time === null) return '';
   const today = startOfDay(now());
   if (time >= today) return clockTime(time);
-  if (time >= today - DAY) return 'Yesterday';
-  if (time >= today - 6 * DAY) return new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(new Date(time));
+  if (time >= today - DAY) return t('Yesterday');
+  if (time >= today - 6 * DAY) return new Intl.DateTimeFormat(locale(), { weekday: 'short' }).format(new Date(time));
   return dateLabel(time);
 }
 
@@ -78,9 +80,9 @@ export function dayLabel(value) {
   const time = parseTime(value);
   if (time === null) return '';
   const today = startOfDay(now());
-  if (time >= today) return 'Today';
-  if (time >= today - DAY) return 'Yesterday';
-  return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', ...(new Date(time).getFullYear() !== new Date(now()).getFullYear() ? { year: 'numeric' } : {}) }).format(new Date(time));
+  if (time >= today) return t('Today');
+  if (time >= today - DAY) return t('Yesterday');
+  return new Intl.DateTimeFormat(locale(), { weekday: 'long', month: 'long', day: 'numeric', ...(new Date(time).getFullYear() !== new Date(now()).getFullYear() ? { year: 'numeric' } : {}) }).format(new Date(time));
 }
 
 export function dayKey(value) {
@@ -92,17 +94,17 @@ export function dayKey(value) {
 
 export function lastSeenText(user) {
   if (!user) return '';
-  if (user.online) return 'online';
-  if (user.presenceHidden) return 'last seen recently';
+  if (user.online) return t('online');
+  if (user.presenceHidden) return t('last seen recently');
   const time = parseTime(user.lastSeenAt);
-  if (time === null) return 'offline';
+  if (time === null) return t('offline');
   const seconds = Math.max(0, (now() - time) / 1000);
-  if (seconds < 60) return 'last seen just now';
-  if (seconds < 3600) return `last seen ${Math.round(seconds / 60)}m ago`;
+  if (seconds < 60) return t('last seen just now');
+  if (seconds < 3600) return t('last seen {n}m ago', { n: Math.round(seconds / 60) });
   const today = startOfDay(now());
-  if (time >= today) return `last seen today at ${clockTime(time)}`;
-  if (time >= today - DAY) return `last seen yesterday at ${clockTime(time)}`;
-  return `last seen ${dateLabel(time)}`;
+  if (time >= today) return t('last seen today at {time}', { time: clockTime(time) });
+  if (time >= today - DAY) return t('last seen yesterday at {time}', { time: clockTime(time) });
+  return t('last seen {date}', { date: dateLabel(time) });
 }
 
 export function formatDuration(ms) {

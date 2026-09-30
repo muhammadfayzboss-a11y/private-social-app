@@ -1,7 +1,9 @@
 import { config } from '../config.js';
 import { all, bootstrapGroupConversation, one, run, transaction } from '../db.js';
 import { clientIp, createSession, dummyPasswordCheck, getSession, hashPassword, rateLimit, sessionCookie, verifyPassword } from '../auth.js';
-import { broadcast, isOnline } from '../realtime.js';
+import { blockedByIds } from '../privacy.js';
+import { broadcast, disconnectSession, isOnline } from '../realtime.js';
+import { getSettings } from '../settings.js';
 import { cleanText, HttpError, iso, json, parseJson, publicUser, randomToken, sha256, validateUsername } from '../utils.js';
 
 function setSession(res, session) {
@@ -28,7 +30,10 @@ async function createAccount(body, role = 'member', invite = null) {
 export function registerAuthRoutes(router) {
   router.get('/api/auth/status', (req, res) => {
     const session = getSession(req);
-    json(res, 200, { authenticated: Boolean(session), needsSetup: !one('SELECT id FROM users LIMIT 1'), user: session?.user || null, csrfToken: session?.csrfToken || null, serverTime: new Date().toISOString() });
+    json(res, 200, {
+      authenticated: Boolean(session), needsSetup: !one('SELECT id FROM users LIMIT 1'), user: session?.user || null,
+      settings: session ? getSettings(session.user.id) : null, csrfToken: session?.csrfToken || null, serverTime: new Date().toISOString()
+    });
   }, { public: true });
 
   router.post('/api/auth/bootstrap', async (req, res) => {
@@ -39,7 +44,7 @@ export function registerAuthRoutes(router) {
     const userRow = await createAccount(body, 'admin');
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
-    json(res, 201, { user: publicUser(userRow, true, { self: true }), csrfToken });
+    json(res, 201, { user: publicUser(userRow, true, { self: true }), settings: getSettings(userRow.id), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/register', async (req, res) => {
@@ -51,7 +56,7 @@ export function registerAuthRoutes(router) {
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
     broadcast('member:joined', { user: publicUser(userRow, true) }, null, userRow.id);
-    json(res, 201, { user: publicUser(userRow, true, { self: true }), csrfToken });
+    json(res, 201, { user: publicUser(userRow, true, { self: true }), settings: getSettings(userRow.id), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/login', async (req, res) => {
@@ -66,11 +71,12 @@ export function registerAuthRoutes(router) {
     if (!(await verifyPassword(String(body.password || ''), userRow.password_hash))) throw new HttpError(401, 'Incorrect username or password.');
     const session = createSession(userRow.id, req);
     const csrfToken = setSession(res, session);
-    json(res, 200, { user: publicUser(userRow, true, { self: true }), csrfToken });
+    json(res, 200, { user: publicUser(userRow, true, { self: true }), settings: getSettings(userRow.id), csrfToken });
   }, { public: true });
 
   router.post('/api/auth/logout', (req, res) => {
     run('DELETE FROM sessions WHERE id = ?', req.session.id);
+    disconnectSession(req.session.id);
     res.setHeader('set-cookie', sessionCookie('', 0));
     json(res, 200, { ok: true });
   });
@@ -93,6 +99,7 @@ export function registerAuthRoutes(router) {
 
   router.get('/api/members', (req, res) => {
     const viewerId = req.session.user.id;
-    json(res, 200, { members: all('SELECT * FROM users ORDER BY display_name').map(user => publicUser(user, isOnline(user.id), { self: user.id === viewerId })) });
+    const hiddenFrom = blockedByIds(viewerId);
+    json(res, 200, { members: all('SELECT * FROM users ORDER BY display_name').map(user => publicUser(user, isOnline(user.id), { self: user.id === viewerId, hiddenFrom })) });
   });
 }

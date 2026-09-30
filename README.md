@@ -1,35 +1,62 @@
-# Circle — a private social app for a small group of friends
+# Circle — private mobile messenger + social feed
 
-An invite-only mobile-first PWA combining a chronological photo/video feed, 24-hour stories, real-time group and one-to-one chat, and a custom sticker system. No public sign-up, no followers, no ads, no recommendation algorithm.
+Circle is an invite-only, mobile-first PWA for a small trusted group. It combines realtime private/group messaging, voice messages, files, reactions, replies and read receipts with a chronological feed and 24-hour stories. The interaction model is inspired by mature mobile messengers, while all implementation, visual assets, wallpapers, icons and branding are original Circle work.
 
-Everything is real and persistent: posts, reactions, comments, stories, views, messages, stickers, read receipts, presence, notifications, and push delivery all read and write to a relational database and private file storage.
+No public sign-up, followers, ads, tracking, recommendation algorithm, npm dependencies, or fake/demo data. Messages, media, settings, stories, viewers, sessions, privacy rules, notifications and social content use the real server and SQLite database.
+
+## Product highlights
+
+### Mobile messaging
+
+- **Chats-first navigation:** Chats, Feed, Activity and Settings; tab roots stay mounted so switching is instant and scroll/state are preserved.
+- **Native-feeling navigation:** pushed full-screen chats, edge-swipe back in standalone mode, Android-back-aware sheets/viewers, keyboard-safe composer and safe-area support.
+- **Chat list:** folders, custom folders, pinned/muted/archived chats, mark unread, drafts, realtime typing/status/unread badges, swipe actions and long-press menus.
+- **Messages:** replies, editing, reactions, pinned messages, forwarding, multi-select, copy/share, delete for me/everyone, day/unread separators, files, links and media gallery.
+- **Reliable voice:** hold and release to send, slide left to cancel, slide up to lock, timer, live level/waveform, preview, 1×/1.5×/2× playback, consecutive playback and one centralized audio player. One recording creates exactly one database/UI message.
+- **Search:** chats, members, usernames, messages, media, files, links and voice messages; recent searches, grouped results, filters and highlighted matches.
+
+### Stories, social and personalization
+
+- Full-screen story viewer with tap/hold/swipe gestures, progress, replies, reactions, viewer list, expiry and author-only archive.
+- Story privacy (hide from chosen members, disable replies), text stories on original gradient backgrounds, photo/video stories.
+- Chronological feed with photo/video posts, reactions, comments, replies, editing, deletion and sharing to chat.
+- **Themes:** Light, Dark, AMOLED and System; font size, density, timestamp style and animation level.
+- **Original chat wallpapers:** colors, gradients, patterns, abstract meshes, custom upload, live preview, blur, dim and dark-theme contrast treatment.
+- English and complete Uzbek (Latin) interface.
+
+### Privacy and PWA
+
+- Per-member block list; reciprocal read-receipt privacy; last-seen privacy; private story viewers.
+- Active device/session list with remote sign-out (including immediate closure of the removed device's realtime stream).
+- Per-category push and in-app notification preferences, mute per chat, sounds, vibration and preview controls.
+- Standalone manifest, maskable icons, 13 generated iOS launch images, app shortcuts, offline shell and install instructions.
 
 ## Requirements
 
-**Node.js 22.5 or newer** is the only requirement. The project has **zero npm dependencies** — it uses Node's built-in HTTP server, SQLite engine (`node:sqlite`), crypto, and the browser's native modules. Nothing to install, nothing to build.
+**Node.js 22.5 or newer** is the only runtime requirement. Circle has **zero npm dependencies**: Node's built-in HTTP server, SQLite (`node:sqlite`), crypto and browser-native ES modules provide the complete stack.
 
 ```bash
-node --version   # must be >= 22.5.0
+node --version   # >= 22.5.0
 ```
 
 ## Setup
 
 ```bash
-cp .env.example .env                                              # 1. create your configuration
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # 2. paste into APP_SECRET
-# 3. set SETUP_CODE in .env to a private one-time value
-npm start                                                         # 4. run (http://localhost:4173)
+cp .env.example .env
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"  # paste into APP_SECRET
+# Set a private SETUP_CODE in .env
+npm start
 ```
 
-With `NODE_ENV=production` the server refuses to start unless `APP_SECRET` (32+ characters) and `SETUP_CODE` are set explicitly — it will never fall back to development defaults.
+Open `http://localhost:4173`:
 
-Then open the app:
+1. Create the first/admin account using `SETUP_CODE`. The setup route permanently disables itself once an account exists.
+2. Open **Settings → Invite friends**, create one single-use invite per friend, and share it privately.
+3. Friends choose **Join with invite**. Nobody can create an account without a valid invite.
 
-1. The first screen is **Create your circle** — enter your `SETUP_CODE`, username, display name, and password. This becomes the admin account. The setup route refuses to work once one account exists.
-2. Go to **Profile → Settings → Create invite code** and share a code privately with each friend. Codes are single-use and expire (7 days by default).
-3. Each friend opens the app, taps **Join with invite**, and enters their code. Without a valid code nobody can create an account.
+Production refuses to start unless `APP_SECRET` is explicitly set to 32+ characters and `SETUP_CODE` is explicit.
 
-## Running it in production
+## Production
 
 ```bash
 NODE_ENV=production \
@@ -42,153 +69,117 @@ UPLOAD_DIR=/data/uploads \
 npm start
 ```
 
-In practice put those values in `.env` (or your host's secret store) and just run `npm start`. The process listens on `PORT` (default `4173`) on all interfaces, serves the app and API from the same origin, creates `DATABASE_PATH`/`UPLOAD_DIR` on first boot, and logs `Circle is ready at <APP_ORIGIN>`. A `Dockerfile`, `.dockerignore`, and `fly.toml` are included — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Use one instance with a persistent volume (`/data`) because SQLite is the single source of truth. `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` and `fly.toml` are included. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-Verify a deployment target before inviting anyone:
-
-```bash
-npm run verify:deploy    # config, headers, cookies, PWA installability, phone layouts
-```
-
-## Installing on a phone
-
-Installation requires a **secure origin**: `https://…` or `http://localhost`. Over a plain `http://192.168.x.x` LAN address the app still works, but browsers refuse to register a service worker, so there is no install prompt and no push. Either deploy first, or use one of the local options below.
-
-**Android (Chrome):** open the site → menu **⋮** → **Add to Home screen** / **Install app** → confirm. It launches standalone with no browser chrome.
-
-**iPhone (Safari, iOS 16.4+ for push):** open the site in **Safari** (not Chrome) → **Share** → **Add to Home Screen** → **Add**. Launch it from the new icon; notifications only work from that installed icon.
-
-**Testing on a phone before deploying:**
-
-- *Android over USB:* `chrome://inspect` on the desktop → **Port forwarding** → map `4173` to `localhost:4173`, then open `http://localhost:4173` on the phone. It counts as a secure origin, so install and service worker both work.
-- *Any phone via a tunnel:* expose the local port with a tunnel that gives you an HTTPS URL (for example `cloudflared tunnel --url http://localhost:4173`), then set `APP_ORIGIN` to that URL and restart.
-
-`APP_ORIGIN` must match the URL you actually open in the browser.
-
-### Optional: push notifications
+Before deploying:
 
 ```bash
-npm run vapid                 # prints VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY
+npm run lint
+npm run typecheck
+npm run build
+npm test
+npm run verify:browser
+npm run verify:deploy
 ```
 
-Paste the output into `.env` and restart. Then each member enables them once per device from **Profile → Settings → Enable push notifications**. Push only fires for members who are not currently connected, and requires HTTPS in production (localhost works for testing). iOS delivers Web Push only to apps installed to the Home Screen (iOS 16.4+).
+## Install on a phone
 
-### Your own sticker packs
+Installation and push require HTTPS (or localhost).
 
-No third-party artwork is bundled. Add your real assets as folders under `stickers/`:
+- **Android / Chrome:** menu **⋮ → Install app / Add to Home screen**.
+- **iPhone / Safari:** **Share → Add to Home Screen → Add**, then launch from the new icon. iOS Web Push requires iOS 16.4+ and the installed Home Screen app.
+- Circle also provides **Settings → Install app** with device-specific instructions and the browser install prompt where available.
 
-```text
-stickers/
-  our-faces/
-    pack.json
-    laughing.webp
-    thumbs-up.png
+The first launch uses generated native-size startup images on common iPhones/iPads, and every screen handles notch/home-indicator safe areas.
+
+### Push notifications (optional)
+
+```bash
+npm run vapid
 ```
 
-`pack.json`:
+Put `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` in `.env`, restart, then enable push under **Settings → Notifications** on each device. Preferences for private chats, groups, mentions, reactions, stories and previews are enforced server-side.
 
-```json
-{
-  "id": "our-faces",
-  "name": "Our Faces",
-  "description": "Custom pack",
-  "version": 1,
-  "coverStickerId": "faces-laughing",
-  "stickers": [
-    { "id": "faces-laughing", "name": "Laughing", "file": "laughing.webp" },
-    { "id": "faces-thumbs", "name": "Thumbs up", "file": "thumbs-up.png" }
-  ]
-}
-```
+### Sticker packs
 
-PNG, WebP, GIF, and SVG are supported. After adding files, use **Profile → Settings → Reload sticker packs** (admin only) — no restart or code change needed. Keep sticker `id` values stable, because sent messages reference them. A small starter pack (`stickers/circle-basics/`) is included so the picker works immediately; delete that folder once your own packs are in place.
+Add original PNG/WebP/GIF/SVG artwork under `stickers/<pack>/` with a `pack.json`; see [`stickers/README.md`](stickers/README.md). Admins reload them from **Settings → Sticker packs**. Keep sticker IDs stable because messages reference them.
 
 ## Environment variables
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `APP_SECRET` | yes | — | Server secret; must be 32+ characters in production. |
-| `SETUP_CODE` | yes | `circle-first-admin` | One-time code to create the first admin account. |
-| `APP_ORIGIN` | production | `http://localhost:4173` | Public URL. An `https://` value turns on Secure cookies and HSTS. |
-| `NODE_ENV` | production | `development` | Set to `production` when deploying; enables the strict configuration checks above. |
-| `PORT` | no | `4173` | HTTP port. Hosting platforms usually set this for you. |
-| `TRUST_PROXY` | no | `false` | Set to `true` behind a reverse proxy so rate limiting sees each member's real IP instead of the proxy's shared address. |
-| `DATABASE_PATH` | no | `./data/circle.db` | SQLite database file. |
-| `UPLOAD_DIR` | no | `./data/uploads` | Private media storage directory. |
+| `APP_SECRET` | production | development-only | Server secret; production requires 32+ characters. |
+| `SETUP_CODE` | production | `circle-first-admin` | One-time code for the first admin account. |
+| `APP_ORIGIN` | production | `http://localhost:4173` | Public URL; HTTPS enables Secure cookies and HSTS. |
+| `NODE_ENV` | production | `development` | Enables strict production validation. |
+| `PORT` | no | `4173` | HTTP port. |
+| `TRUST_PROXY` | no | `false` | Trust the proxy's first `X-Forwarded-For` value for rate limits. |
+| `DATABASE_PATH` | no | `./data/circle.db` | SQLite database path. |
+| `UPLOAD_DIR` | no | `./data/uploads` | Private uploaded-media path. |
 | `STICKER_DIR` | no | `./stickers` | Sticker pack directory. |
 | `SESSION_DAYS` | no | `30` | Session lifetime. |
-| `MAX_UPLOAD_MB` | no | `25` | Per-file upload limit. |
-| `STORY_ARCHIVE_DAYS` | no | `30` | How long authors can still see their own expired stories and viewers in *Profile → Your stories*. Others lose access the moment a story expires. |
+| `MAX_UPLOAD_MB` | no | `25` | Maximum size for one upload. |
+| `STORY_ARCHIVE_DAYS` | no | `30` | Author-only retention for expired stories/viewers. |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | no | — | Enables Web Push. |
 
-Secrets live only on the server; the browser never receives anything beyond the VAPID *public* key.
+Secrets never enter frontend code; the browser receives only the VAPID **public** key.
 
-## Scripts
+## Commands
 
-| Command | What it does |
+| Command | Purpose |
 | --- | --- |
-| `npm start` | Run the app. |
-| `npm run dev` | Run with auto-reload. |
-| `npm test` | 52 API, security, realtime, chat-reliability, push, and configuration tests. |
-| `npm run verify:browser` | 32 end-to-end checks in headless Chrome (real voice recording via a fake microphone) with screenshots. |
-| `npm run verify:deploy` | 22 deployment checks: production config, headers, cookies, PWA installability, offline shell, phone layouts. |
-| `npm run verify` | All three suites. |
-| `npm run vapid` | Generate push keys. |
-| `npm run icons` | Regenerate app icons from code. |
+| `npm start` | Run Circle. |
+| `npm run dev` | Run with Node's file watcher. |
+| `npm run lint` | Parse all 86 JS modules, validate imports and enforce CSP-safe markup. |
+| `npm run typecheck` | Validate the native-ESM import/export contract (there is no TypeScript/transpiler). |
+| `npm run build` | Verify every deployable asset, PWA shell path, manifest, size budget and iOS launch image. |
+| `npm test` | 67 API, security, privacy, migration, realtime, push and configuration tests. |
+| `npm run verify:browser` | 29 mobile product checks in real headless Chrome with screenshots and a synthetic microphone. |
+| `npm run verify:deploy` | 22 production, PWA, offline, keyboard, touch-target and phone-layout checks. |
+| `npm run verify` | Run API + browser + deployment suites. |
+| `npm run icons` | Regenerate icons and 13 iOS startup images from original code-drawn assets. |
+| `npm run vapid` | Generate Web Push keys. |
 
-## Project layout
+## Layout
 
 ```text
-src/                  server
-  server.js           HTTP transport, security headers, routing, static shell
-  router.js           tiny pattern router
-  config.js           environment loading and validation
-  db.js  schema.sql   SQLite connection and normalized schema
-  auth.js             scrypt passwords, sessions, CSRF, rate limiting
-  storage.js          private media storage adapter (validation, range streaming)
-  realtime.js         Server-Sent Events fan-out and presence
-  notifications.js    activity records and push dispatch
-  webpush.js          VAPID + aes128gcm Web Push (built-in crypto only)
-  stickers.js         filesystem-driven sticker pack loader
-  maintenance.js      session, expired story, and orphan media cleanup
-  routes/             auth, social, stories, chat, activity endpoints
-public/               installable PWA client
-  app.js              shell, routing, badges, theme, service worker registration
-  store.js            client state and data loading
-  realtime.js         event stream client with reconnection
-  views/              home, create, chat, activity, profile, auth
-  components/         post card, stories, sticker picker, media, share
+src/
+  server.js                 HTTP/static transport, security headers, Brotli/Gzip
+  db.js  schema.sql         SQLite schema + additive/rebuild migrations
+  auth.js                   scrypt passwords, sessions, CSRF, throttling
+  messages.js               idempotency, paging, viewer-specific message formatting
+  settings.js  privacy.js   validated preferences and server-enforced privacy
+  linkPreview.js            cached metadata with DNS-pinned SSRF protection
+  storage.js                private media/files, content sniffing, range streaming
+  realtime.js               session-aware SSE fan-out, presence and reconnect events
+  routes/                   auth, account, chat, social, stories, activity
+public/
+  app.js  router.js         lazy shell, four tabs, deep links
+  store.js  realtime.js     idempotent state and reconnect reconciliation
+  lib/nav.js                persistent mobile navigation stack and edge swipe
+  lib/audio.js              single audio manager
+  lib/settings.js           immediate local + debounced server preferences
+  lib/wallpapers.js         original generated backgrounds
+  lib/i18n.js               English/Uzbek interface
+  views/                    chats, conversation, search, feed, activity, profile, settings
+  components/               messages, voice composer, stories, attachments, shared media
+  styles.css  mobile.css    base + mobile product design system
   sw.js  manifest.webmanifest  icons/
-stickers/             your sticker packs (metadata-driven)
-tests/                integration tests
-scripts/              icon generation, VAPID keys, browser and deployment verification
-docs/                 architecture, deployment, testing results
-Dockerfile  .dockerignore  docker-entrypoint.sh  fly.toml    container deployment
+tests/                      real HTTP/database/storage/realtime integration tests
+scripts/                    lint/build/browser/deploy/icon verification
 ```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data model and design decisions, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for free-tier hosting, and [docs/TESTING.md](docs/TESTING.md) for verification results.
 
 ## Security summary
 
-- Invite-only registration; the setup route self-disables after the first account.
-- Passwords hashed with salted scrypt; session tokens and invite codes stored only as SHA-256 hashes.
-- `HttpOnly`, `SameSite=Strict` session cookies, plus a per-session CSRF token on every mutation.
-- Every API, media, sticker, and event route requires an active session. Media URLs are opaque and access-checked per request; private chat media is only readable by conversation members.
-- Ownership checks on editing and deleting posts, comments, messages, and stories.
-- Parameterised SQL everywhere; all user-generated text is escaped at render time.
-- Upload allowlist by declared type *and* content signature, size caps, and random storage names.
-- CSP, `X-Frame-Options: DENY`, `nosniff`, referrer and permissions policies; HSTS when served over HTTPS.
-- Per-account login throttling (8 failed attempts per 10 minutes) plus a per-source cap, so one member can never lock out the group.
-- Production refuses to boot on missing or weak secrets.
+- Invite-only accounts; self-disabling bootstrap.
+- Salted scrypt passwords; only SHA-256 hashes of sessions/invites at rest.
+- `HttpOnly; SameSite=Strict` session cookie plus CSRF on every mutation; `Secure` over HTTPS.
+- Conversation membership, ownership, blocks, story privacy and media authorization enforced server-side.
+- Remote session termination closes open realtime streams immediately.
+- Upload purpose/type allowlists and content signatures; documents are forced to download, never rendered inline; random private storage names.
+- Link previews reject internal/loopback/link-local/IPv4-mapped addresses, pin validated DNS for each connection, revalidate redirects, and cap time/bytes.
+- User text escaped before HTML; strict CSP forbids inline scripts, frames and cross-origin connections.
+- Private API/media never enters Service Worker CacheStorage; app-shell assets only are cached offline.
+- Parameterized SQL, bounded pagination, indexes, rate limits and stable idempotency keys.
 
-## Deployment checklist
-
-1. **Create `.env`** with your own `APP_SECRET` (32+ random characters) and `SETUP_CODE`.
-2. **Pick a host** with a persistent volume and free HTTPS — `Dockerfile` and `fly.toml` are ready; see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-3. **Set production variables:** `NODE_ENV=production`, `APP_ORIGIN=https://your-url`, `TRUST_PROXY=true`, `DATABASE_PATH` and `UPLOAD_DIR` on the volume.
-4. **Run `npm run verify:deploy`** against the build before inviting anyone.
-5. **Open the HTTPS URL on your phone** and install it: Android Chrome → *Add to Home screen*; iPhone **Safari** → *Share* → *Add to Home Screen*.
-6. **Optional push:** `npm run vapid`, set the three `VAPID_*` variables, restart, then enable notifications once per device from *Profile → Settings*.
-7. **Replace the starter stickers** with your artwork in `stickers/`, delete `stickers/circle-basics/`, and use *Settings → Reload sticker packs*.
-8. **Back up** `data/circle.db` and `data/uploads/` on a schedule — copying those files is a complete backup.
-9. **Point a domain** at the deployment when you want one, and update `APP_ORIGIN` to match.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TESTING.md](docs/TESTING.md) for details.
