@@ -60,6 +60,7 @@ export default {
   "Stop and review": "To‘xtatib tinglash", "Delete recording": "Yozuvni o‘chirish", "Send voice message": "Ovozli xabarni yuborish",
   "Voice messages are not supported in this browser.": "Bu brauzer ovozli xabarlarni qo‘llamaydi.",
   "Recording was too short — hold on a little longer.": "Yozuv juda qisqa — biroz uzoqroq bosib turing.",
+  "Could not finish recording. Please try again.": "Ovozli yozuvni yakunlab bo‘lmadi. Qayta urinib ko‘ring.",
   "Play voice messages in a row": "Ovozli xabarlarni ketma-ket ijro etish", "Hold to record": "Yozish uchun bosib turish",
   "Default playback speed": "Standart ijro tezligi", "Off: tap the microphone to start and stop": "O‘chiq: boshlash va to‘xtatish uchun mikrofonni bosing",
   "Camera": "Kamera", "Add a caption…": "Izoh qo‘shing…", "Caption": "Izoh",

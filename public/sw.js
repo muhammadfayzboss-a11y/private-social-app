@@ -1,4 +1,4 @@
-const VERSION = 'circle-v4';
+const VERSION = 'circle-v5';
 const SHELL = [
   '/', '/index.html', '/styles.css', '/mobile.css', '/boot-theme.js', '/app.js', '/api.js', '/ui.js', '/icons.js', '/store.js', '/realtime.js', '/router.js', '/push.js',
   '/views/auth.js', '/views/chats.js', '/views/conversation.js', '/views/chatInfo.js', '/views/search.js', '/views/feed.js', '/views/create.js',
