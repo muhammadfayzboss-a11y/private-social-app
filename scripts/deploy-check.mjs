@@ -127,13 +127,15 @@ try {
     return 'CSP, nosniff, DENY, referrer, permissions';
   });
 
-  await check('the app shell is not cached but static assets are', async () => {
+  await check('the app shell and executable assets revalidate after every deployment', async () => {
     const base = `http://127.0.0.1:${HTTPS_PORT}`;
     const shell = (await fetch(`${base}/`)).headers.get('cache-control');
-    const asset = (await fetch(`${base}/styles.css`)).headers.get('cache-control');
+    const code = (await fetch(`${base}/styles.css`)).headers.get('cache-control');
+    const image = (await fetch(`${base}/icons/icon-192.png`)).headers.get('cache-control');
     if (!/no-cache/.test(shell || '')) throw new Error(`shell cache-control was "${shell}"`);
-    if (!/max-age/.test(asset || '')) throw new Error(`asset cache-control was "${asset}"`);
-    return `shell "${shell}", assets "${asset}"`;
+    if (!/no-cache/.test(code || '')) throw new Error(`code cache-control was "${code}"`);
+    if (!/max-age/.test(image || '')) throw new Error(`image cache-control was "${image}"`);
+    return `shell "${shell}", code "${code}", images "${image}"`;
   });
 
   await check('private endpoints and media stay closed to anonymous requests', async () => {
@@ -344,10 +346,11 @@ try {
   });
 
   await check('a redeployed asset reaches the browser instead of a stale cached copy', async () => {
-    // Simulates "you deployed a fix": the file changes on disk while a client already has it cached.
+    // Use the exact same URL before and after redeploy. A query-string change would hide the real
+    // failure by creating a different HTTP/module-cache entry.
     fs.writeFileSync(probeFile, 'export const build = "before";\n');
     const first = await evaluate(page, `
-      const module = await import('/__deploy-probe.js?first');
+      const module = await import('/__deploy-probe.js');
       return module.build;`);
     if (first !== 'before') throw new Error('probe asset did not load');
 
@@ -356,10 +359,10 @@ try {
     await page.send('Page.reload', { ignoreCache: false });
     await waitFor(page, "document.querySelector('.tabbar')", { label: 'shell after redeploy' });
     const served = await evaluate(page, `
-      const response = await fetch('/__deploy-probe.js');
-      return (await response.text()).includes('after') ? 'fresh' : 'stale';`);
-    if (served !== 'fresh') throw new Error('the service worker served the old asset after a redeploy');
-    return 'updated assets are picked up after reload';
+      const module = await import('/__deploy-probe.js');
+      return module.build;`);
+    if (served !== 'after') throw new Error(`the same asset URL remained ${served} after a redeploy`);
+    return 'same asset URL updated after reload';
   });
 
   await check('one member failing to sign in does not lock out the others', async () => {

@@ -14,6 +14,7 @@ function walk(directory) {
 }
 roots.forEach(walk);
 const problems = [];
+const importPath = specifier => specifier.split(/[?#]/, 1)[0];
 
 // Node's parser is the project's syntax/type boundary (native ESM, no transpilation).
 for (const file of files) {
@@ -31,12 +32,12 @@ for (const file of files) {
   const text = fs.readFileSync(file, 'utf8');
   for (const match of text.matchAll(/import\s*(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g)) {
     if (!match[1].startsWith('.')) continue;
-    const target = path.resolve(path.dirname(file), match[1]);
+    const target = path.resolve(path.dirname(file), importPath(match[1]));
     if (!fs.existsSync(target)) problems.push(`${file}: missing import ${match[1]}`);
   }
   for (const match of text.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g)) {
     if (!match[2].startsWith('.')) continue;
-    const target = path.resolve(path.dirname(file), match[2]);
+    const target = path.resolve(path.dirname(file), importPath(match[2]));
     if (!fs.existsSync(target)) continue;
     const source = fs.readFileSync(target, 'utf8');
     for (const item of match[1].split(',')) {

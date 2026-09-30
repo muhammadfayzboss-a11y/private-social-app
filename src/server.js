@@ -42,7 +42,8 @@ function serveStatic(req,res,pathname){
   if(!fs.existsSync(file))throw new HttpError(404,'Application shell not found.');
   const stat=fs.statSync(file);const extension=path.extname(file);const accepts=String(req.headers['accept-encoding']||'');
   const encoding=compressible.has(extension)&&stat.size>1024?(accepts.includes('br')?'br':accepts.includes('gzip')?'gzip':null):null;
-  const headers={'content-type':mimeTypes[extension]||'application/octet-stream','cache-control':file.endsWith('index.html')?'no-cache':'public, max-age=3600'};
+  const revalidate=file.endsWith('index.html')||extension==='.js'||extension==='.css'||extension==='.webmanifest';
+  const headers={'content-type':mimeTypes[extension]||'application/octet-stream','cache-control':revalidate?'no-cache':'public, max-age=3600'};
   if(encoding){
     const key=`${file}:${stat.mtimeMs}:${encoding}`;let payload=compressed.get(key);
     if(!payload){const source=fs.readFileSync(file);payload=encoding==='br'?brotliCompressSync(source,{params:{[zlibConstants.BROTLI_PARAM_QUALITY]:5}}):gzipSync(source,{level:6});if(compressed.size>100)compressed.clear();compressed.set(key,payload);}

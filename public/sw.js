@@ -1,4 +1,4 @@
-const VERSION = 'circle-v5';
+const VERSION = 'circle-v6';
 const SHELL = [
   '/', '/index.html', '/styles.css', '/mobile.css', '/boot-theme.js', '/app.js', '/api.js', '/ui.js', '/icons.js', '/store.js', '/realtime.js', '/router.js', '/push.js',
   '/views/auth.js', '/views/chats.js', '/views/conversation.js', '/views/chatInfo.js', '/views/search.js', '/views/feed.js', '/views/create.js',
@@ -12,7 +12,17 @@ const SHELL = [
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(VERSION).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  // `reload` bypasses the browser HTTP cache. A freshly deployed worker must never populate its
+  // new CacheStorage with one-hour-old JS/CSS responses from the previous deployment.
+  event.waitUntil((async () => {
+    const cache = await caches.open(VERSION);
+    await Promise.all(SHELL.map(async url => {
+      const response = await fetch(url, { cache: 'reload' });
+      if (!response.ok) throw new Error(`Could not cache ${url} (${response.status})`);
+      await cache.put(url, response);
+    }));
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', event => {
@@ -20,6 +30,19 @@ self.addEventListener('activate', event => {
     .then(keys => Promise.all(keys.filter(key => key !== VERSION).map(key => caches.delete(key))))
     .then(() => self.clients.claim()));
 });
+
+async function cachedAsset(request) {
+  const exact = await caches.match(request);
+  if (exact) return exact;
+  const url = new URL(request.url);
+  // Build-version query strings force a fresh online load; the precached path remains its offline
+  // equivalent so a first install also works before that versioned URL has been visited.
+  if (url.search) {
+    const shell = await caches.match(url.pathname);
+    if (shell) return shell;
+  }
+  return Response.error();
+}
 
 self.addEventListener('fetch', event => {
   const { request } = event;
@@ -32,17 +55,17 @@ self.addEventListener('fetch', event => {
   if (url.pathname.startsWith('/api/')) return;
 
   if (request.mode === 'navigate') {
-    event.respondWith(fetch(request).catch(() => caches.match('/index.html')));
+    event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => caches.match('/index.html')));
     return;
   }
 
   // Network-first for code and assets: a redeploy must never be masked by a cached copy.
   // The cache is kept up to date and used as the offline fallback.
   event.respondWith(
-    fetch(request).then(response => {
+    fetch(request, { cache: 'no-store' }).then(response => {
       if (response.ok) { const copy = response.clone(); caches.open(VERSION).then(cache => cache.put(request, copy)); }
       return response;
-    }).catch(() => caches.match(request))
+    }).catch(() => cachedAsset(request))
   );
 });
 
